@@ -44,7 +44,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from app import config as config_module
-from app import google_auth
+from app import google_auth, safety
 from app import summariser as summariser_mod
 from app import tool_loop as tool_loop_mod
 from app.claude import SONNET, ClaudeClient, Usage
@@ -177,8 +177,18 @@ async def lifespan(app: FastAPI):
 
     state.templates = Jinja2Templates(directory=str(state.app_root / "templates"))
     state.templates.env.globals["asset_version"] = str(int(_time.time()))
+    state.templates.env.globals["claudia_mode"] = cfg.mode
+    state.templates.env.globals["display_name"] = cfg.display_name
+    state.templates.env.globals["parent_display_name"] = cfg.kid_parent_display_name
+    state.templates.env.globals["crisis_footer_text"] = safety.CRISIS_FOOTER_TEXT
+    state.templates.env.globals["au_hotlines"] = safety.AU_HOTLINES
 
-    log.info("app.startup", ops_mode=cfg.ops_mode, data_root=str(cfg.data_root))
+    log.info(
+        "app.startup",
+        mode=cfg.mode,
+        ops_mode=cfg.ops_mode,
+        data_root=str(cfg.data_root),
+    )
     yield
     log.info("app.shutdown")
 
@@ -480,11 +490,44 @@ async def session_message(
 
     form = await request.form()
     user_text = str(form.get("content", "")).strip()
+    frame_tag = str(form.get("frame", "")).strip()
     if not user_text:
         return HTMLResponse("", status_code=204)
 
+    # Kid-mode safety floor: run regex tripwire + Haiku classifier on every
+    # incoming message before the companion is allowed to reply. Per Premise
+    # 3 + values.schema.json, this is non-disableable in kid mode.
+    safety_result = safety.screen_message(
+        user_text,
+        api_key=state.cfg.anthropic_api_key,
+        classifier_model=state.cfg.classifier_model,
+        enabled=state.cfg.is_kid,
+    )
+    if safety_result.flagged:
+        log.info(
+            "safety.flagged",
+            session_id=session_id,
+            category=safety_result.category,
+            prominence=safety_result.prominence,
+            regex=safety_result.flagged_regex,
+            classifier=safety_result.flagged_classifier,
+        )
+        state.store.append_event(
+            session_id,
+            "safety_flag",
+            {
+                "category": safety_result.category,
+                "prominence": safety_result.prominence,
+                "explanation": safety_result.explanation,
+                "regex": safety_result.flagged_regex,
+                "classifier": safety_result.flagged_classifier,
+            },
+        )
+
     state.store.append_message(session_id, Message(role="user", content=user_text))
-    blocks = state.loader.assemble()
+    if frame_tag:
+        state.store.append_event(session_id, "frame_tag", {"tag": frame_tag})
+    blocks = state.loader.assemble(frame_tag=frame_tag)
 
     if state.cfg.is_local:
         reply_text = f"[local mock reply] heard: {user_text[:120]!r}"

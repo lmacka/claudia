@@ -591,3 +591,77 @@ pre.err { color: #e08b8b; background: var(--crisis-bg); padding: var(--r-space-3
   .session-list li a { flex-wrap: wrap; }
   .primary-cta { font-size: 1.1rem; padding: var(--r-space-3); }
 }
+
+/* ============ KID MODE ============ */
+/* Crisis footer: page-bottom on every kid page, AU hotlines hardcoded.
+ * Per design D7 we accept "scroll-off-screen on long pages" rather than
+ * sticky-bottom — when the kid is composing they're at-bottom anyway, and
+ * the active safety mechanism is the classifier (see app/safety.py), not
+ * the footer's persistent visibility. */
+.crisis-footer {
+  border-top: 2px solid var(--crisis-border);
+  background: var(--crisis-bg);
+  padding: var(--r-space-3) var(--r-space-4);
+  margin-top: var(--r-space-5);
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+.crisis-footer a {
+  color: var(--pico-color);
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+  margin: 0 var(--r-space-1);
+}
+.crisis-footer a:hover { text-decoration: underline; }
+.crisis-footer-note {
+  font-size: 0.75rem;
+  color: var(--pico-muted-color);
+  display: block;
+  margin-top: var(--r-space-1);
+}
+
+/* Action buttons row in kid chat: 2-col on mobile, single row on tablet+ */
+.action-row {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--r-space-2);
+  margin-bottom: var(--r-space-4);
+}
+.action-row button,
+.action-row a[role="button"] {
+  margin: 0;
+  padding: var(--r-space-3);
+  font-size: 0.9rem;
+  text-align: left;
+  background: var(--panel-bg);
+  border-color: var(--pico-muted-border-color);
+  color: var(--pico-color);
+  white-space: normal;
+  min-height: 44px;  /* a11y touch target floor */
+}
+.action-row button:hover,
+.action-row a[role="button"]:hover {
+  background: var(--msg-user-bg);
+  border-color: var(--pico-primary);
+}
+@media (min-width: 768px) {
+  .action-row { grid-template-columns: repeat(4, 1fr); }
+}
+
+/* Kid first-chat: 3-bullet honest contract, prominent passphrase entry. */
+.firstchat-bullets { line-height: 1.7; padding-left: var(--r-space-5); }
+.firstchat-bullets li { margin-bottom: var(--r-space-2); }
+
+/* Mood-at-start panel — appears once per session, dashed border to signal "draft/optional". */
+.mood-start-panel {
+  border: 1px dashed var(--pico-muted-border-color);
+  padding: var(--r-space-3) var(--r-space-4);
+  margin-bottom: var(--r-space-4);
+  border-radius: var(--pico-border-radius);
+  background: var(--panel-bg);
+}
+.mood-start-panel h3 { margin: 0 0 var(--r-space-2); font-size: 1.05rem; }
+.mood-start-panel .mood-row { display: flex; align-items: center; gap: var(--r-space-3); }
+.mood-start-panel input[type="range"] { flex: 1; min-width: 0; margin: 0; }
+.mood-start-panel .skip-link { font-size: 0.85rem; color: var(--pico-muted-color); }
