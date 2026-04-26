@@ -1,7 +1,7 @@
 [project]
-name = "robo-therapist"
+name = "claudia"
 version = "0.1.0"
-description = "Self-hosted private therapy sounding-board. Single-user. Not for distribution."
+description = "Self-hosted single-tenant AI companion for autistic adults and parents of neurodivergent kids. Adult or kid mode per Helm release."
 requires-python = ">=3.13"
 dependencies = [
     "fastapi>=0.115",
@@ -16,6 +16,8 @@ dependencies = [
     "google-api-python-client>=2.100",
     "google-auth-oauthlib>=1.2",
     "reportlab>=4.4.10",
+    "cryptography>=43.0",
+    "argon2-cffi>=23.1",
 ]
 
 [dependency-groups]

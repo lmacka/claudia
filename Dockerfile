@@ -21,8 +21,8 @@ RUN uv sync --frozen --no-dev 2>/dev/null || uv sync --no-dev
 
 COPY app ./app
 
-RUN useradd -r -u 1000 -d /app -s /sbin/nologin robo && \
-    mkdir -p /data && chown -R robo:robo /app
+RUN useradd -r -u 1000 -d /app -s /sbin/nologin claudia && \
+    mkdir -p /data && chown -R claudia:claudia /app /data
 
 USER 1000
 

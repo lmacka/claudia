@@ -64,8 +64,9 @@
   <h3>Hand off</h3>
   <p>Give Jasper this URL. He'll log in, set his own passphrase, and start chatting.</p>
   <p style="font-family: ui-monospace, monospace; padding: 8px 12px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 3px;">
-    https://claudia-jasper.coopernetes.com
+    https://{{ ingress.host }}/
   </p>
+  <p class="note">Resolved at install time from your Helm values.</p>
 </div>
 
 <p>
