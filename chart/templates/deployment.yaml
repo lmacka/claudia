@@ -1,0 +1,129 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "claudia.fullname" . }}
+  labels:
+    {{- include "claudia.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "claudia.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "claudia.selectorLabels" . | nindent 8 }}
+        claudia.lmacka.io/mode: {{ .Values.mode | quote }}
+    spec:
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: claudia
+          image: {{ include "claudia.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: ROBO_MODE
+              value: prod
+            - name: ROBO_DATA_ROOT
+              value: /data
+            - name: ROBO_DEFAULT_MODEL
+              value: {{ .Values.model.primary | quote }}
+            - name: CLAUDIA_MODE
+              value: {{ .Values.mode | quote }}
+            - name: CLAUDIA_DISPLAY_NAME
+              value: {{ .Values.displayName | quote }}
+            - name: CLAUDIA_DOB
+              value: {{ .Values.dob | quote }}
+            - name: CLAUDIA_COUNTRY
+              value: {{ .Values.country | quote }}
+            - name: CLAUDIA_THEME
+              value: {{ .Values.theme | quote }}
+            - name: CLAUDIA_INGRESS_HOST
+              value: {{ .Values.ingress.host | quote }}
+            - name: CLAUDIA_MODEL_PRIMARY
+              value: {{ .Values.model.primary | quote }}
+            - name: CLAUDIA_MODEL_CLASSIFIER
+              value: {{ .Values.model.classifier | quote }}
+            {{- if eq .Values.mode "kid" }}
+            - name: CLAUDIA_KID_PARENT_DISPLAY_NAME
+              value: {{ .Values.kid.parentDisplayName | quote }}
+            - name: CLAUDIA_KID_SAFETY_HAIKU_CLASSIFIER
+              value: "true"
+            - name: CLAUDIA_KID_SAFETY_WRITE_TOOLS_DISABLED
+              value: "true"
+            - name: CLAUDIA_KID_SAFETY_NO_ANTHROPOMORPHISM
+              value: "true"
+            - name: CLAUDIA_KID_SAFETY_SESSION_NUDGE_MINUTES
+              value: {{ .Values.kid.safety.session_nudge_minutes | toJson | quote }}
+            - name: CLAUDIA_KID_ENCRYPTION_ENABLED
+              value: "true"
+            {{- end }}
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.anthropicSecretRef.name }}
+                  key: {{ .Values.anthropicSecretRef.key }}
+            - name: BASIC_AUTH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.basicAuth.passwordSecretRef.name }}
+                  key: {{ .Values.basicAuth.passwordSecretRef.key }}
+            {{- if .Values.googleOAuthSecretRef.enabled }}
+            - name: GOOGLE_OAUTH_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.googleOAuthSecretRef.name }}
+                  key: {{ .Values.googleOAuthSecretRef.clientIdKey }}
+            - name: GOOGLE_OAUTH_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.googleOAuthSecretRef.name }}
+                  key: {{ .Values.googleOAuthSecretRef.clientSecretKey }}
+            - name: GOOGLE_OAUTH_REDIRECT_URI
+              value: "https://{{ .Values.ingress.host }}/oauth/callback"
+            {{- end }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop: [ALL]
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "claudia.fullname" . }}-data

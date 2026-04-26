@@ -1,0 +1,65 @@
+# Example values for an adult-mode claudia deploy.
+#
+# Pre-requisites:
+#   1. A Kubernetes cluster with an Ingress controller installed.
+#   2. Two Secrets in the target namespace:
+#        kubectl create secret generic anthropic-api-key --from-literal=api-key=sk-ant-...
+#        kubectl create secret generic claudia-auth      --from-literal=password='your-chat-password'
+#   3. (Optional) Google OAuth Secret if you want Gmail/Calendar tools:
+#        kubectl create secret generic google-oauth \
+#          --from-literal=client-id=... \
+#          --from-literal=client-secret=...
+#
+# Then:
+#   helm install claudia oci://ghcr.io/lmacka/claudia \
+#     --version 0.1.0 \
+#     --values examples/adult-values.yaml \
+#     --namespace claudia --create-namespace
+
+mode: adult
+
+displayName: "Liam"
+dob: "1985-02-14"
+country: "AU"
+
+theme: sage
+
+anthropicSecretRef:
+  name: anthropic-api-key
+  key: api-key
+
+basicAuth:
+  passwordSecretRef:
+    name: claudia-auth
+    key: password
+
+# Uncomment if you want Gmail/Calendar tools in adult mode.
+# googleOAuthSecretRef:
+#   enabled: true
+#   name: google-oauth
+#   clientIdKey: client-id
+#   clientSecretKey: client-secret
+
+model:
+  primary: claude-sonnet-4-6
+  classifier: claude-haiku-4-5
+
+pvc:
+  size: 10Gi
+  # storageClassName: ""    # leave empty to use cluster default
+
+ingress:
+  enabled: true
+  host: claudia.example.com    # CHANGE ME to your DNS
+  # className: nginx           # set if your cluster has multiple Ingress controllers
+  tls:
+    enabled: true
+    secretName: claudia-tls    # cert-manager Certificate or pre-created Secret
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 1000m
+    memory: 1Gi

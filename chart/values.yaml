@@ -47,9 +47,15 @@ ingress:
   enabled: true
   host: ""                            # required: e.g. claudia.example.com
   className: ""                       # empty = cluster default
+  gatewayApi: false                   # true = render HTTPRoute (Gateway API); false = Ingress (default per /plan-eng-review D6)
+  parentRef:                          # used only when gatewayApi=true
+    name: ""                          # e.g. "internal-gateway"
+    namespace: ""                     # gateway namespace, if different
+    sectionName: ""                   # listener name on the gateway, e.g. "https"
+  annotations: {}                     # cert-manager / nginx hints
   tls:
     enabled: true
-    secretName: ""                    # required if tls.enabled
+    secretName: ""                    # required if tls.enabled (Ingress only; HTTPRoute uses listener TLS)
 
 resources:
   requests:
@@ -63,3 +69,7 @@ image:
   repository: ghcr.io/lmacka/claudia
   tag: ""                             # defaults to chart appVersion if empty
   pullPolicy: IfNotPresent
+  pullSecrets: []                     # e.g. [ { name: ghcr-pull } ] for private registry
+
+# nameOverride: ""                    # overrides app name (default: chart name)
+# fullnameOverride: ""                # overrides full resource name
