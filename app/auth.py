@@ -16,10 +16,9 @@ Kid mode (per /plan-eng-review D5):
     sentinel.
   - IP rate limit: 5 attempts per 15 min per IP.
 
-Crypto note: this module handles the passphrase verification. The KEK
-derivation + session_keys cache wiring lives in app/crypto.py
-(implemented in step 6d). For the auth shape we just need: did this
-passphrase verify? — done via Argon2id hash compare.
+v1 dev mode: kid mode is access-control only. No at-rest encryption,
+no KEK derivation, no break-glass envelope. The passphrase is just a
+password. Encryption returns at Step 11 (see docs/build-plan-v1.md).
 """
 
 from __future__ import annotations

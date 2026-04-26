@@ -45,9 +45,7 @@ from fastapi.templating import Jinja2Templates
 
 from app import auth as auth_mod
 from app import config as config_module
-from app import crypto as crypto_mod
 from app import google_auth, safety
-from app import session_keys as session_keys_mod
 from app import summariser as summariser_mod
 from app import tool_loop as tool_loop_mod
 from app.claude import SONNET, ClaudeClient, Usage
@@ -110,7 +108,6 @@ class AppState:
     claude: ClaudeClient | None
     templates: Jinja2Templates
     app_root: Path
-    session_keys: session_keys_mod.SessionKeys
     rate_limiter: auth_mod.IPRateLimiter
     kid_sessions: dict[str, str]  # cookie token -> kid_session_id (in-memory)
 
@@ -173,7 +170,6 @@ async def lifespan(app: FastAPI):
         kid_parent_display_name=cfg.kid_parent_display_name,
     )
     state.claude = None if cfg.is_local else ClaudeClient(api_key=cfg.anthropic_api_key)
-    state.session_keys = session_keys_mod.SessionKeys()
     state.rate_limiter = auth_mod.IPRateLimiter()
     state.kid_sessions = {}
 
@@ -410,7 +406,6 @@ async def login_submit(request: Request) -> Response:
             )
         try:
             auth_mod.set_passphrase(cfg.data_root, passphrase)
-            envelope_text = crypto_mod.initialise_crypto(cfg.data_root, passphrase)
         except ValueError as e:
             return state.templates.TemplateResponse(
                 request,
@@ -423,15 +418,9 @@ async def login_submit(request: Request) -> Response:
                 },
                 status_code=400,
             )
-        # First passphrase set + crypto initialised. Show the parent the
-        # break-glass envelope ONCE (page-only; the file is also written
-        # to /data so the parent can re-view via /admin/break-glass).
-        log.info("kid_auth.passphrase_set_and_crypto_init")
-        # Continue to login below to set the cookie + cache KEKs, then
-        # redirect to the "envelope shown" page rather than home.
-        first_time_envelope = envelope_text
-    else:
-        first_time_envelope = None
+        # First passphrase set. v1 dev mode: no encryption, no break-glass
+        # envelope. Continue to login below to set the cookie.
+        log.info("kid_auth.passphrase_set")
 
     # Login flow: verify
     if not auth_mod.verify_passphrase(cfg.data_root, passphrase):
@@ -449,38 +438,12 @@ async def login_submit(request: Request) -> Response:
             status_code=401,
         )
 
-    # Derive KEKs and cache them for the session.
-    kek_pair = crypto_mod.keys_from_passphrase(cfg.data_root, passphrase)
-    if kek_pair is None:
-        # Corrupt or pre-init state — shouldn't happen if verify passed.
-        log.error("kid_auth.kek_derivation_failed_after_verify")
-        return state.templates.TemplateResponse(
-            request,
-            "kid_login.html",
-            {
-                "is_first_time": False,
-                "display_name": cfg.display_name,
-                "parent_display_name": cfg.kid_parent_display_name,
-                "error": "Internal error. Try again.",
-            },
-            status_code=500,
-        )
-
     state.rate_limiter.reset(ip)
     token = auth_mod.new_kid_session_token()
     state.kid_sessions[token] = cfg.display_name or "kid"
-    # Cache the kid KEK keyed by the cookie token. The OCR + auditor
-    # background tasks pull KEK by token (cookie). Per /plan-eng-review D2.
-    await state.session_keys.put(token, kek_pair.kek_kid)
-    # Also cache the break-glass KEK so new session files can be wrapped
-    # with both KEKs at session-create time.
-    await state.session_keys.put(f"{token}:break", kek_pair.kek_break_glass)
     log.info("kid_auth.login_success", display_name=cfg.display_name)
 
-    if first_time_envelope:
-        resp = RedirectResponse(url="/break-glass-envelope", status_code=303)
-    else:
-        resp = RedirectResponse(url="/", status_code=303)
+    resp = RedirectResponse(url="/", status_code=303)
     resp.set_cookie(
         key=auth_mod.KID_COOKIE_NAME,
         value=token,
@@ -493,36 +456,6 @@ async def login_submit(request: Request) -> Response:
     return resp
 
 
-@app.get("/break-glass-envelope", response_class=HTMLResponse)
-async def break_glass_envelope_page(
-    request: Request,
-    _: str = Depends(require_auth),
-) -> HTMLResponse:
-    """
-    Shown once after first-time passphrase setup. Displays the printed
-    envelope key for the parent. Page reads from disk so re-loading
-    works until the parent confirms they printed it (v1.5: explicit "I
-    printed it" → wipe).
-    """
-    cfg = state.cfg
-    if not cfg.is_kid:
-        return RedirectResponse(url="/", status_code=303)
-    env_path = crypto_mod.envelope_path(cfg.data_root)
-    if not env_path.exists():
-        # Already wiped or never set. Send to home.
-        return RedirectResponse(url="/", status_code=303)
-    envelope_text = env_path.read_text(encoding="utf-8").strip()
-    return state.templates.TemplateResponse(
-        request,
-        "break_glass_envelope.html",
-        {
-            "envelope_text": envelope_text,
-            "display_name": cfg.display_name,
-            "parent_display_name": cfg.kid_parent_display_name,
-        },
-    )
-
-
 @app.post("/logout")
 async def logout(request: Request) -> Response:
     cfg = state.cfg
@@ -530,7 +463,6 @@ async def logout(request: Request) -> Response:
         cookie = request.cookies.get(auth_mod.KID_COOKIE_NAME, "")
         if cookie:
             state.kid_sessions.pop(cookie, None)
-            await state.session_keys.clear(cookie)
     resp = RedirectResponse(url="/login", status_code=303)
     resp.delete_cookie(auth_mod.KID_COOKIE_NAME, path="/")
     return resp

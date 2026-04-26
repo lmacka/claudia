@@ -7,8 +7,8 @@ Covers:
 - IPRateLimiter sliding-window enforcement.
 - KidAuthState file is mode 0600.
 
-Crypto verification is structural here — the actual KEK derivation +
-encrypted-storage tests live in test_crypto.py (Step 6d).
+v1 dev mode: no encryption, no KEK derivation. The passphrase is just
+a password. Encryption-coupled tests return at Step 11.
 """
 
 from __future__ import annotations
