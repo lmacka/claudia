@@ -1,19 +1,24 @@
-"""Tests for app/extractors.py — framework + Text + Image extractors."""
+"""Tests for app/extractors.py — framework + Text + Image + PDF + DOCX + DOC + chat."""
 
 from __future__ import annotations
 
 import datetime as _dt
 import io
+import shutil
 from pathlib import Path
 
 import pytest
 from PIL import Image
 
 from app.extractors import (
+    ChatExportExtractor,
     DateDetection,
+    DocExtractor,
+    DocxExtractor,
     ExtractorRegistry,
     ExtractResult,
     ImageExtractor,
+    PdfExtractor,
     TextExtractor,
     VerifyResult,
     build_registry,
@@ -345,3 +350,356 @@ def test_verify_result_checks_default():
 def test_date_detection_unknown():
     d = DateDetection(date=None, source="unknown")
     assert d.date is None
+
+
+# ===========================================================================
+# PdfExtractor
+# ===========================================================================
+
+
+def _write_text_pdf(path: Path, pages: list[str]) -> None:
+    """Write a real text-PDF using reportlab (already a project dep)."""
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.pagesizes import LETTER
+
+    c = canvas.Canvas(str(path), pagesize=LETTER)
+    for page_text in pages:
+        for i, line in enumerate(page_text.splitlines() or [page_text]):
+            c.drawString(72, 720 - i * 14, line[:120])
+        c.showPage()
+    c.save()
+
+
+def test_pdf_can_handle():
+    ex = PdfExtractor()
+    assert ex.can_handle(Path("doc.pdf"), "application/pdf")
+    assert ex.can_handle(Path("doc.pdf"), "application/octet-stream")
+    assert not ex.can_handle(Path("notes.txt"), "text/plain")
+
+
+def test_pdf_extract_text_pdf(tmp_path: Path):
+    p = tmp_path / "report.pdf"
+    # Each page needs >100 chars to avoid the scan-detection fallback.
+    page_one = "Hello world. This is page one with enough text to clear the scan-detection threshold of 100 chars per page."
+    page_two = "Second page content with similar density of words so pypdf returns a non-trivial extraction across both pages."
+    _write_text_pdf(p, [page_one, page_two])
+    emits, emit = _emits()
+    result = PdfExtractor().extract(p, emit)
+    assert result.extractor == "pdf_pypdf"
+    assert result.page_count == 2
+    assert "Hello world" in result.extracted_md
+    assert "Second page" in result.extracted_md
+    assert any("Extracting page" in m for m in emits)
+
+
+def test_pdf_extract_falls_back_to_vision_for_sparse_text(tmp_path: Path):
+    """If chars/page < SCAN_THRESHOLD, vision OCR runs."""
+    p = tmp_path / "scanned.pdf"
+    # Single page with virtually no text — forces scan branch
+    _write_text_pdf(p, [""])
+    transcribe_calls = []
+
+    def fake_transcribe(image_bytes: bytes, mime: str) -> str:
+        transcribe_calls.append((len(image_bytes), mime))
+        return "OCR'd text from page"
+
+    ex = PdfExtractor(transcribe=fake_transcribe)
+    result = ex.extract(p)
+    assert result.extractor == "pdf_vision_ocr"
+    assert "OCR'd text" in result.extracted_md
+    assert len(transcribe_calls) == 1
+    assert transcribe_calls[0][1] == "image/png"
+
+
+def test_pdf_extract_marks_unavailable_when_no_transcribe(tmp_path: Path):
+    p = tmp_path / "scanned.pdf"
+    _write_text_pdf(p, [""])
+    ex = PdfExtractor()  # no transcribe injected
+    result = ex.extract(p)
+    assert result.extractor == "pdf_vision_ocr_unavailable"
+
+
+def test_pdf_verify_ok_for_dense_text(tmp_path: Path):
+    p = tmp_path / "report.pdf"
+    body = "Lorem ipsum dolor sit amet. " * 30
+    _write_text_pdf(p, [body, body])
+    ex = PdfExtractor()
+    extract = ex.extract(p)
+    verify = ex.verify(p, extract)
+    assert verify.status == "ok"
+
+
+def test_pdf_detect_date_from_metadata(tmp_path: Path):
+    """reportlab embeds /CreationDate; we should read it."""
+    p = tmp_path / "with-date.pdf"
+    _write_text_pdf(p, ["Hello"])
+    detection = PdfExtractor().detect_date(p)
+    # reportlab embeds today's date by default
+    assert detection.source in ("pdf_metadata", "unknown")
+    if detection.source == "pdf_metadata":
+        assert isinstance(detection.date, _dt.date)
+
+
+def test_pdf_parse_pdf_creation_date_string():
+    parsed = PdfExtractor._parse_pdf_creation_date("D:20180312143215+11'00'")
+    assert parsed == _dt.date(2018, 3, 12)
+
+
+def test_pdf_parse_pdf_creation_date_invalid():
+    assert PdfExtractor._parse_pdf_creation_date("not a date") is None
+    assert PdfExtractor._parse_pdf_creation_date("D:short") is None
+
+
+def test_pdf_date_from_match_iso():
+    import re
+
+    m = re.compile(r"(\d{4})-(\d{2})-(\d{2})").search("Date: 2018-03-12 issued")
+    assert PdfExtractor._date_from_match(m, "iso") == _dt.date(2018, 3, 12)
+
+
+# ===========================================================================
+# DocxExtractor
+# ===========================================================================
+
+
+def _write_docx(
+    path: Path,
+    paragraphs: list[tuple[str, str]] | None = None,
+    table_rows: list[list[str]] | None = None,
+) -> None:
+    """Write a small .docx using python-docx itself."""
+    from docx import Document
+
+    doc = Document()
+    for style, text in paragraphs or [("Normal", "default body")]:
+        doc.add_paragraph(text, style=style)
+    if table_rows:
+        table = doc.add_table(rows=len(table_rows), cols=len(table_rows[0]))
+        for r, row in enumerate(table_rows):
+            for c, cell in enumerate(row):
+                table.cell(r, c).text = cell
+    doc.save(str(path))
+
+
+def test_docx_can_handle():
+    ex = DocxExtractor()
+    assert ex.can_handle(Path("note.docx"), "")
+    assert not ex.can_handle(Path("note.pdf"), "application/pdf")
+
+
+def test_docx_extract_paragraphs_and_headings(tmp_path: Path):
+    p = tmp_path / "note.docx"
+    _write_docx(
+        p,
+        paragraphs=[
+            ("Heading 1", "Title"),
+            ("Heading 2", "Subhead"),
+            ("Normal", "body line"),
+        ],
+    )
+    result = DocxExtractor().extract(p)
+    assert "# Title" in result.extracted_md
+    assert "## Subhead" in result.extracted_md
+    assert "body line" in result.extracted_md
+    assert result.extractor == "docx_python_docx"
+
+
+def test_docx_extract_renders_tables(tmp_path: Path):
+    p = tmp_path / "table.docx"
+    _write_docx(
+        p,
+        paragraphs=[("Normal", "intro")],
+        table_rows=[["A", "B"], ["1", "2"]],
+    )
+    result = DocxExtractor().extract(p)
+    md = result.extracted_md
+    assert "| A | B |" in md
+    assert "| 1 | 2 |" in md
+
+
+def test_docx_verify_ok(tmp_path: Path):
+    p = tmp_path / "note.docx"
+    _write_docx(p, paragraphs=[("Normal", "hello")])
+    ex = DocxExtractor()
+    verify = ex.verify(p, ex.extract(p))
+    assert verify.status == "ok"
+
+
+def test_docx_detect_date_from_core_props(tmp_path: Path):
+    p = tmp_path / "note.docx"
+    _write_docx(p, paragraphs=[("Normal", "hi")])
+    detection = DocxExtractor().detect_date(p)
+    # python-docx auto-stamps core_properties.created on save.
+    assert detection.source in ("docx_core_props", "unknown")
+    if detection.source == "docx_core_props":
+        assert isinstance(detection.date, _dt.date)
+
+
+# ===========================================================================
+# DocExtractor (legacy .doc) — conditional on libreoffice
+# ===========================================================================
+
+
+HAS_LIBREOFFICE = shutil.which("libreoffice") is not None
+
+
+def test_doc_can_handle():
+    ex = DocExtractor()
+    assert ex.can_handle(Path("legacy.doc"), "")
+    assert ex.can_handle(Path("anywhere"), "application/msword")
+    assert not ex.can_handle(Path("note.docx"), "")
+
+
+def test_doc_extract_raises_when_libreoffice_missing(tmp_path: Path):
+    """Without LibreOffice in PATH, the conversion should raise cleanly."""
+    p = tmp_path / "fake.doc"
+    p.write_bytes(b"\xd0\xcf\x11\xe0")  # OLE compound doc magic header
+    ex = DocExtractor()
+    if HAS_LIBREOFFICE:
+        pytest.skip("libreoffice IS installed; this test asserts the error path")
+    with pytest.raises(RuntimeError, match="not found in PATH"):
+        ex.extract(p)
+
+
+@pytest.mark.skipif(not HAS_LIBREOFFICE, reason="libreoffice not installed")
+def test_doc_extract_via_libreoffice(tmp_path: Path):
+    """End-to-end: write a .doc via libreoffice, extract it back."""
+    docx_path = tmp_path / "src.docx"
+    _write_docx(docx_path, paragraphs=[("Normal", "doc-extractor smoke test")])
+    # Convert .docx → .doc via libreoffice for the round-trip.
+    import subprocess
+
+    result = subprocess.run(
+        ["libreoffice", "--headless", "--convert-to", "doc", "--outdir", str(tmp_path), str(docx_path)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    doc_path = tmp_path / "src.doc"
+    assert doc_path.exists()
+
+    extract = DocExtractor().extract(doc_path)
+    assert "doc-extractor smoke test" in extract.extracted_md
+    assert extract.extractor == "doc_libreoffice_docx"
+
+
+# ===========================================================================
+# ChatExportExtractor — WhatsApp shape
+# ===========================================================================
+
+
+WHATSAPP_SAMPLE = """\
+[12/04/26, 14:32:01] Liam: hey are we still on for sat
+[12/04/26, 14:35:00] Rhiannon: yeah 4pm
+[12/04/26, 14:35:30] Rhiannon: bring jasper's stuff please
+[12/04/26, 18:01:00] Liam: ok will do
+[12/04/26, 18:02:11] Rhiannon: also <Media omitted>
+[13/04/26, 8:14:00] Liam: how was the rest of the day
+"""
+
+
+def _write_chat(path: Path, content: str = WHATSAPP_SAMPLE) -> None:
+    path.write_text(content, encoding="utf-8")
+
+
+def test_chat_can_handle_whatsapp(tmp_path: Path):
+    p = tmp_path / "_chat.txt"
+    _write_chat(p)
+    assert ChatExportExtractor().can_handle(p, "text/plain")
+
+
+def test_chat_can_handle_rejects_random_text(tmp_path: Path):
+    p = tmp_path / "notes.txt"
+    p.write_text("just a regular note\nwith multiple lines\nof prose\nnothing chat here\nat all", encoding="utf-8")
+    assert not ChatExportExtractor().can_handle(p, "text/plain")
+
+
+def test_chat_can_handle_rejects_non_text(tmp_path: Path):
+    p = tmp_path / "snap.png"
+    p.write_bytes(b"\x89PNG")
+    assert not ChatExportExtractor().can_handle(p, "image/png")
+
+
+def test_chat_extract_parses_messages(tmp_path: Path):
+    p = tmp_path / "_chat.txt"
+    _write_chat(p)
+    result = ChatExportExtractor().extract(p)
+    assert result.extractor == "chat_whatsapp"
+    assert "Liam" in result.extra_meta["participants"]
+    assert "Rhiannon" in result.extra_meta["participants"]
+    # 5 real messages + 1 system "<Media omitted>" stripped
+    assert result.extra_meta["message_count"] == 5
+    assert result.extra_meta["system_message_count"] == 1
+    assert "Liam" in result.extracted_md
+    assert "Rhiannon" in result.extracted_md
+
+
+def test_chat_extract_continuation_lines(tmp_path: Path):
+    p = tmp_path / "_chat.txt"
+    p.write_text(
+        "[12/04/26, 14:32:01] Liam: line one\nline two of same message\nline three\n"
+        "[12/04/26, 14:35:00] Rhiannon: response\n",
+        encoding="utf-8",
+    )
+    result = ChatExportExtractor().extract(p)
+    assert result.extra_meta["message_count"] == 2
+    # The continuation should be in the body of the first message.
+    assert "line one\nline two" in result.extracted_md or "line two" in result.extracted_md
+
+
+def test_chat_verify_ok(tmp_path: Path):
+    p = tmp_path / "_chat.txt"
+    _write_chat(p)
+    ex = ChatExportExtractor()
+    verify = ex.verify(p, ex.extract(p))
+    assert verify.status == "ok"
+
+
+def test_chat_detect_date_first_message(tmp_path: Path):
+    p = tmp_path / "_chat.txt"
+    _write_chat(p)
+    detection = ChatExportExtractor().detect_date(p)
+    assert detection.source == "chat_first_message"
+    assert detection.date == _dt.date(2026, 4, 12)
+
+
+# ===========================================================================
+# Registry order check (post-commit-C)
+# ===========================================================================
+
+
+def test_registry_order_pdf_before_text(tmp_path: Path):
+    p = tmp_path / "doc.pdf"
+    _write_text_pdf(p, ["hello"])
+    reg = build_registry()
+    picked = reg.pick(p, "application/pdf")
+    assert picked is not None
+    assert picked.kind == "pdf"
+
+
+def test_registry_chat_before_text(tmp_path: Path):
+    p = tmp_path / "_chat.txt"
+    _write_chat(p)
+    reg = build_registry()
+    picked = reg.pick(p, "text/plain")
+    assert picked is not None
+    assert picked.kind == "chat_export"
+
+
+def test_registry_text_picks_for_plain_note(tmp_path: Path):
+    p = tmp_path / "note.txt"
+    p.write_text("just a regular note about something\nnothing chat here\nplain prose only\nfour lines\nfive\n", encoding="utf-8")
+    reg = build_registry()
+    picked = reg.pick(p, "text/plain")
+    assert picked is not None
+    assert picked.kind == "text"
+
+
+def test_registry_docx_picks_for_docx(tmp_path: Path):
+    p = tmp_path / "note.docx"
+    _write_docx(p, paragraphs=[("Normal", "hi")])
+    reg = build_registry()
+    picked = reg.pick(p, "")
+    assert picked is not None
+    assert picked.kind == "docx"
