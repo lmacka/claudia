@@ -122,7 +122,7 @@ Documented in `docs/safety.md` (v1 dev-mode section, top of file).
 |---|------|--------|-------|
 | 1 | Repo + chart skeleton + CI + examples | ✓ done | commits up to `b0eae8e` |
 | 2 | Adult mode parity | ✓ done | `ff84e0c` |
-| 3 | Library + people + extractors | **next** | per `docs/library-people-plan.md`. Substrate. |
+| 3 | Library + people + extractors | ✓ done | 8 commits A–H (`0b4c4fc` → `c539dcb`). Library, extractor framework + 6 format-specific extractors, /library + /people routes + UI, SSE streaming, people tools + auditor people_updates, documents.py rewrite. 286 tests pass. |
 | 4 | Three-stage setup wizard (adult + kid) | depends on 3 | |
 | 5 | Memory-diff review screen | depends on 3 | |
 | 6 | Kid-mode persona + safety + two-role auth + admin routes | ✓ done (encryption parts dormant) | 6a–6f shipped |
