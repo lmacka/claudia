@@ -75,6 +75,43 @@ class ClaudeClient:
             out.append({"type": "text", "text": blocks.block3})
         return out
 
+    def single_turn(
+        self,
+        model: str,
+        user_content: list[dict],
+        system: str | None = None,
+        max_tokens: int = 2048,
+    ) -> Reply:
+        """
+        One-shot call with arbitrary user content blocks (text or image).
+        No history, no caching. Used by the library extractor for vision OCR
+        and verification spot-checks.
+        """
+        kwargs: dict = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "messages": [{"role": "user", "content": user_content}],
+        }
+        if system:
+            kwargs["system"] = system
+        raw = self._c.messages.create(**kwargs)
+        u = raw.usage
+        usage = Usage(
+            input_tokens=getattr(u, "input_tokens", 0) or 0,
+            output_tokens=getattr(u, "output_tokens", 0) or 0,
+            cache_read_tokens=getattr(u, "cache_read_input_tokens", 0) or 0,
+            cache_write_tokens=getattr(u, "cache_creation_input_tokens", 0) or 0,
+        )
+        text_parts = [b.text for b in raw.content if hasattr(b, "text")]
+        text = "\n\n".join(text_parts).strip()
+        log.info(
+            "claude.single_turn",
+            model=model,
+            in_tokens=usage.input_tokens,
+            out_tokens=usage.output_tokens,
+        )
+        return Reply(text=text, usage=usage, model=model, stop_reason=raw.stop_reason)
+
     def reply(
         self,
         model: str,
