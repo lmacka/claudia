@@ -11,10 +11,10 @@ from fastapi.testclient import TestClient
 
 @pytest.fixture
 def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
-    monkeypatch.setenv("ROBO_MODE", "local")
-    monkeypatch.setenv("ROBO_DATA_ROOT", str(tmp_path))
+    monkeypatch.setenv("CLAUDIA_OPS_MODE", "local")
+    monkeypatch.setenv("CLAUDIA_DATA_ROOT", str(tmp_path))
     monkeypatch.setenv(
-        "ROBO_PROMPTS_DIR",
+        "CLAUDIA_PROMPTS_DIR",
         str(Path(__file__).resolve().parents[1] / "app" / "prompts"),
     )
     ctx = tmp_path / "context"
@@ -50,7 +50,7 @@ def _events(client: TestClient, session_id: str) -> list[tuple[str, dict]]:
 def test_home_renders(client: TestClient) -> None:
     r = client.get("/")
     assert r.status_code == 200
-    assert "robo" in r.text
+    assert "claudia" in r.text
     assert "New session" in r.text
 
 

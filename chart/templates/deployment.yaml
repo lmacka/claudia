@@ -37,11 +37,11 @@ spec:
               containerPort: 8080
               protocol: TCP
           env:
-            - name: ROBO_MODE
+            - name: CLAUDIA_OPS_MODE
               value: prod
-            - name: ROBO_DATA_ROOT
+            - name: CLAUDIA_DATA_ROOT
               value: /data
-            - name: ROBO_DEFAULT_MODEL
+            - name: CLAUDIA_DEFAULT_MODEL
               value: {{ .Values.model.primary | quote }}
             - name: CLAUDIA_MODE
               value: {{ .Values.mode | quote }}

@@ -1,7 +1,7 @@
 """
-FastAPI app for robo-therapist (simplified build).
+FastAPI app for claudia (simplified build, lifted from robo-therapist).
 
-Single-user, LAN-only, basic-auth. Single mode, single model (Sonnet 4.6).
+Single-user, LAN-only, basic-auth. Single ops_mode, single model (Sonnet 4.6).
 Removed: tripwire/safety, session timers, modes/model toggle, bridge status,
 cost governor, /summary review page, commitments YAML, prometheus metrics,
 clean/dev cookie, prompt SHA tracking, per-session PDF export.
@@ -172,12 +172,12 @@ async def lifespan(app: FastAPI):
     state.templates = Jinja2Templates(directory=str(state.app_root / "templates"))
     state.templates.env.globals["asset_version"] = str(int(_time.time()))
 
-    log.info("app.startup", mode=cfg.mode, data_root=str(cfg.data_root))
+    log.info("app.startup", ops_mode=cfg.ops_mode, data_root=str(cfg.data_root))
     yield
     log.info("app.shutdown")
 
 
-app = FastAPI(title="robo-therapist", lifespan=lifespan)
+app = FastAPI(title="claudia", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(Path(__file__).resolve().parent / "static")), name="static")
 
 
@@ -185,7 +185,7 @@ app.mount("/static", StaticFiles(directory=str(Path(__file__).resolve().parent /
 # Basic auth
 # ---------------------------------------------------------------------------
 
-_basic_auth = HTTPBasic(realm="robo-therapist", auto_error=False)
+_basic_auth = HTTPBasic(realm="claudia", auto_error=False)
 
 
 def require_auth(credentials: HTTPBasicCredentials | None = Depends(_basic_auth)) -> str:
@@ -196,7 +196,7 @@ def require_auth(credentials: HTTPBasicCredentials | None = Depends(_basic_auth)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Unauthorized",
-            headers={"WWW-Authenticate": 'Basic realm="robo-therapist"'},
+            headers={"WWW-Authenticate": 'Basic realm="claudia"'},
         )
     user_ok = secrets.compare_digest(credentials.username, cfg.basic_auth_user)
     pw_ok = secrets.compare_digest(credentials.password, cfg.basic_auth_password)
@@ -204,7 +204,7 @@ def require_auth(credentials: HTTPBasicCredentials | None = Depends(_basic_auth)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Unauthorized",
-            headers={"WWW-Authenticate": 'Basic realm="robo-therapist"'},
+            headers={"WWW-Authenticate": 'Basic realm="claudia"'},
         )
     return credentials.username
 
@@ -223,7 +223,7 @@ async def healthz() -> str:
 async def metrics() -> str:
     """Stub kept so the existing Prometheus ServiceMonitor scrape doesn't 404.
     All app metrics were removed in the simplify pass — Liam reads pod logs."""
-    return "# robo-therapist metrics removed\n"
+    return "# claudia metrics removed\n"
 
 
 @app.get("/readyz", response_class=PlainTextResponse)

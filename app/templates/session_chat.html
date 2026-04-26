@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}robo — chat{% endblock %}
+{% block title %}claudia — chat{% endblock %}
 {% block content %}
 <header class="session-header">
   <a href="/" class="muted">&larr; home</a>
@@ -29,19 +29,19 @@
       hx-post="/session/{{ header.session_id }}/message"
       hx-target="#messages"
       hx-swap="beforeend"
-      hx-on::before-request="roboEchoUser(event)"
-      hx-on::after-request="roboClearPendingEcho(); this.reset(); document.getElementById('content').focus(); roboScrollBottom();"
-      hx-on::after-swap="roboScrollBottom();"
+      hx-on::before-request="claudiaEchoUser(event)"
+      hx-on::after-request="claudiaClearPendingEcho(); this.reset(); document.getElementById('content').focus(); claudiaScrollBottom();"
+      hx-on::after-swap="claudiaScrollBottom();"
       class="compose">
   <textarea name="content" id="content" rows="3" placeholder="…" autofocus required
-            onpaste="roboHandlePaste(event, '{{ header.session_id }}')"></textarea>
+            onpaste="claudiaHandlePaste(event, '{{ header.session_id }}')"></textarea>
   <div class="compose-actions">
     <label class="file-upload-btn secondary outline" title="Upload PDF or image">
       <input type="file" id="uploader" accept=".pdf,.png,.jpg,.jpeg,.txt,.md,.eml" style="display:none"
-             onchange="roboUpload(this)">
+             onchange="claudiaUpload(this)">
       Upload
     </label>
-    <button type="button" class="secondary outline" onclick="roboPasteChat('{{ header.session_id }}')">
+    <button type="button" class="secondary outline" onclick="claudiaPasteChat('{{ header.session_id }}')">
       Paste chat
     </button>
     <button type="submit" class="primary">Send</button>
@@ -64,7 +64,7 @@
 {% endif %}
 
 <script>
-  function roboScrollBottom() {
+  function claudiaScrollBottom() {
     // Scroll the latest message into view. Use rAF so the swapped DOM is
     // measured before we scroll.
     requestAnimationFrame(function() {
@@ -80,16 +80,16 @@
   }
 
   // Initial scroll on page load.
-  document.addEventListener('DOMContentLoaded', roboScrollBottom);
+  document.addEventListener('DOMContentLoaded', claudiaScrollBottom);
 
   // After the polling fragment swaps (opener arrives, etc.), scroll too.
   document.body.addEventListener('htmx:afterSwap', function(evt) {
     if (evt.detail && evt.detail.target && evt.detail.target.id === 'messages') {
-      roboScrollBottom();
+      claudiaScrollBottom();
     }
   });
 
-  function roboEchoUser(evt) {
+  function claudiaEchoUser(evt) {
     const ta = document.getElementById('content');
     const text = (ta && ta.value || '').trim();
     if (!text) return;
@@ -102,14 +102,14 @@
     wrap.appendChild(body);
     const msgs = document.getElementById('messages');
     if (msgs) msgs.appendChild(wrap);
-    roboScrollBottom();
+    claudiaScrollBottom();
   }
 
-  function roboClearPendingEcho() {
+  function claudiaClearPendingEcho() {
     document.querySelectorAll('[data-pending-echo]').forEach(n => n.remove());
   }
 
-  async function roboUpload(input) {
+  async function claudiaUpload(input) {
     const f = input.files && input.files[0];
     if (!f) return;
     const status = document.querySelector('#upload-status small');
@@ -132,7 +132,7 @@
     input.value = '';
   }
 
-  async function roboHandlePaste(e, sessionId) {
+  async function claudiaHandlePaste(e, sessionId) {
     const items = (e.clipboardData || {}).items || [];
     for (const it of items) {
       if (it.kind === 'file' && it.type.startsWith('image/')) {
@@ -170,7 +170,7 @@
     }
   }
 
-  async function roboPasteChat(sessionId) {
+  async function claudiaPasteChat(sessionId) {
     const text = prompt('Paste the chat/email here. It will be saved as a file under uploads/pastes/.');
     if (!text) return;
     const label = prompt('Optional label (letters/numbers/dashes):', 'paste') || 'paste';

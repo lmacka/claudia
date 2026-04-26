@@ -1,5 +1,5 @@
 """
-Session storage for robo-therapist.
+Session storage for claudia.
 
 Design:
 - One JSONL file per session under /data/sessions/.

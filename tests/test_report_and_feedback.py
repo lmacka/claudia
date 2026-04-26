@@ -14,10 +14,10 @@ from app.summariser import AppFeedback, append_app_feedback
 
 @pytest.fixture
 def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
-    monkeypatch.setenv("ROBO_MODE", "local")
-    monkeypatch.setenv("ROBO_DATA_ROOT", str(tmp_path))
+    monkeypatch.setenv("CLAUDIA_OPS_MODE", "local")
+    monkeypatch.setenv("CLAUDIA_DATA_ROOT", str(tmp_path))
     monkeypatch.setenv(
-        "ROBO_PROMPTS_DIR",
+        "CLAUDIA_PROMPTS_DIR",
         str(Path(__file__).resolve().parents[1] / "app" / "prompts"),
     )
     (tmp_path / "context").mkdir(parents=True, exist_ok=True)

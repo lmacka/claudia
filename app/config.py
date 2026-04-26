@@ -1,20 +1,20 @@
 """
-Runtime configuration for robo-therapist.
+Runtime configuration for claudia.
 
-Three serve modes per ARCHITECTURE.md § 11 Phase 1:
+Three serve modes:
 - local:  InMemoryStore + fixture replies + mock API key. Zero external calls.
 - dev:    Real Anthropic API using Haiku (cheap). Local filesystem for /data.
-- prod:   Full setup — Anthropic with configured model, /data mounted from NFS.
+- prod:   Full setup — Anthropic with configured model, /data mounted from PVC.
 
 Env vars (all optional, have sane defaults):
-    ROBO_MODE              local | dev | prod   (default: prod)
-    ROBO_DATA_ROOT         path to /data        (default: /data)
-    ROBO_PROMPTS_DIR       path to prompts      (default: /app/app/prompts)
-    ANTHROPIC_API_KEY      required in dev/prod
-    BASIC_AUTH_USER        default: liam
-    BASIC_AUTH_PASSWORD    required in dev/prod
-    ROBO_DEFAULT_MODEL     claude-sonnet-4-6 | claude-opus-4-7 (default sonnet)
-    ROBO_DEV_MODEL         model for dev mode (default claude-haiku-4-5-20251001)
+    CLAUDIA_OPS_MODE          local | dev | prod   (default: prod)
+    CLAUDIA_DATA_ROOT         path to /data        (default: /data)
+    CLAUDIA_PROMPTS_DIR       path to prompts      (default: /app/app/prompts)
+    ANTHROPIC_API_KEY         required in dev/prod
+    BASIC_AUTH_USER           default: liam
+    BASIC_AUTH_PASSWORD       required in dev/prod
+    CLAUDIA_DEFAULT_MODEL     claude-sonnet-4-6 | claude-opus-4-7 (default sonnet)
+    CLAUDIA_DEV_MODEL         model for dev mode (default claude-haiku-4-5)
 """
 
 from __future__ import annotations
@@ -24,12 +24,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-Mode = Literal["local", "dev", "prod"]
+OpsMode = Literal["local", "dev", "prod"]
 
 
 @dataclass(frozen=True)
 class Config:
-    mode: Mode
+    ops_mode: OpsMode
     data_root: Path
     prompts_dir: Path
     anthropic_api_key: str  # empty in local mode
@@ -43,36 +43,38 @@ class Config:
 
     @property
     def is_local(self) -> bool:
-        return self.mode == "local"
+        return self.ops_mode == "local"
 
     @property
     def is_dev(self) -> bool:
-        return self.mode == "dev"
+        return self.ops_mode == "dev"
 
 
 def load() -> Config:
-    mode = os.environ.get("ROBO_MODE", "prod")
-    if mode not in ("local", "dev", "prod"):
-        raise ValueError(f"ROBO_MODE must be local|dev|prod, got {mode!r}")
+    ops_mode = os.environ.get("CLAUDIA_OPS_MODE", "prod")
+    if ops_mode not in ("local", "dev", "prod"):
+        raise ValueError(f"CLAUDIA_OPS_MODE must be local|dev|prod, got {ops_mode!r}")
 
-    data_root = Path(os.environ.get("ROBO_DATA_ROOT", "/data"))
-    prompts_dir = Path(os.environ.get("ROBO_PROMPTS_DIR", "/app/app/prompts"))
+    data_root = Path(os.environ.get("CLAUDIA_DATA_ROOT", "/data"))
+    prompts_dir = Path(os.environ.get("CLAUDIA_PROMPTS_DIR", "/app/app/prompts"))
 
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     auth_user = os.environ.get("BASIC_AUTH_USER", "liam")
     auth_pw = os.environ.get("BASIC_AUTH_PASSWORD", "")
 
-    default_model = os.environ.get("ROBO_DEFAULT_MODEL", "claude-sonnet-4-6")
-    dev_model = os.environ.get("ROBO_DEV_MODEL", "claude-haiku-4-5-20251001")
+    default_model = os.environ.get("CLAUDIA_DEFAULT_MODEL", "claude-sonnet-4-6")
+    dev_model = os.environ.get("CLAUDIA_DEV_MODEL", "claude-haiku-4-5-20251001")
 
     google_client_id = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "")
     google_client_secret = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "")
-    # Default redirect matches ARCHITECTURE.md § 10.4
+    # Default redirect host inferred from CLAUDIA_INGRESS_HOST (set by the chart);
+    # explicit override always wins.
+    ingress_host = os.environ.get("CLAUDIA_INGRESS_HOST", "claudia.example.com")
     google_redirect_uri = os.environ.get(
-        "GOOGLE_OAUTH_REDIRECT_URI", "https://robo.coopernetes.com/oauth/callback"
+        "GOOGLE_OAUTH_REDIRECT_URI", f"https://{ingress_host}/oauth/callback"
     )
 
-    if mode in ("dev", "prod"):
+    if ops_mode in ("dev", "prod"):
         if not api_key:
             raise RuntimeError(
                 "ANTHROPIC_API_KEY is required in dev/prod mode"
@@ -83,7 +85,7 @@ def load() -> Config:
             )
 
     return Config(
-        mode=mode,  # type: ignore[arg-type]
+        ops_mode=ops_mode,  # type: ignore[arg-type]
         data_root=data_root,
         prompts_dir=prompts_dir,
         anthropic_api_key=api_key,
