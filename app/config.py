@@ -1,34 +1,43 @@
 """
 Runtime configuration for claudia.
 
-Three serve modes:
-- local:  InMemoryStore + fixture replies + mock API key. Zero external calls.
-- dev:    Real Anthropic API using Haiku (cheap). Local filesystem for /data.
-- prod:   Full setup — Anthropic with configured model, /data mounted from PVC.
+Two ortho dimensions:
+- persona mode: adult | kid (Helm release setting; immutable post-install)
+- ops mode:     local | dev | prod (operational only, never user-visible)
 
 Env vars (all optional, have sane defaults):
+    CLAUDIA_MODE              adult | kid          (default: adult)
     CLAUDIA_OPS_MODE          local | dev | prod   (default: prod)
     CLAUDIA_DATA_ROOT         path to /data        (default: /data)
     CLAUDIA_PROMPTS_DIR       path to prompts      (default: /app/app/prompts)
+    CLAUDIA_DISPLAY_NAME      e.g. "Liam" / "Jasper"
+    CLAUDIA_COUNTRY           default: AU
+    CLAUDIA_INGRESS_HOST      e.g. claudia.example.com
+    CLAUDIA_KID_PARENT_DISPLAY_NAME  what claudia calls the deployer ("your dad")
+    CLAUDIA_KID_SAFETY_SESSION_NUDGE_MINUTES  JSON array, default [60, 90]
     ANTHROPIC_API_KEY         required in dev/prod
-    BASIC_AUTH_USER           default: liam
-    BASIC_AUTH_PASSWORD       required in dev/prod
+    BASIC_AUTH_USER           default: liam (adult mode chat user OR parent-admin)
+    BASIC_AUTH_PASSWORD       adult: chat password; kid: parent-admin password
     CLAUDIA_DEFAULT_MODEL     claude-sonnet-4-6 | claude-opus-4-7 (default sonnet)
     CLAUDIA_DEV_MODEL         model for dev mode (default claude-haiku-4-5)
+    CLAUDIA_MODEL_CLASSIFIER  haiku model for safety classifier (kid mode only)
 """
 
 from __future__ import annotations
 
+import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
 OpsMode = Literal["local", "dev", "prod"]
+PersonaMode = Literal["adult", "kid"]
 
 
 @dataclass(frozen=True)
 class Config:
+    mode: PersonaMode
     ops_mode: OpsMode
     data_root: Path
     prompts_dir: Path
@@ -37,9 +46,15 @@ class Config:
     basic_auth_password: str  # empty in local mode
     default_model: str
     dev_model: str
-    google_client_id: str
-    google_client_secret: str
-    google_redirect_uri: str
+    classifier_model: str
+    display_name: str
+    country: str
+    ingress_host: str
+    kid_parent_display_name: str
+    kid_session_nudge_minutes: list[int] = field(default_factory=lambda: [60, 90])
+    google_client_id: str = ""
+    google_client_secret: str = ""
+    google_redirect_uri: str = ""
 
     @property
     def is_local(self) -> bool:
@@ -49,8 +64,20 @@ class Config:
     def is_dev(self) -> bool:
         return self.ops_mode == "dev"
 
+    @property
+    def is_kid(self) -> bool:
+        return self.mode == "kid"
+
+    @property
+    def is_adult(self) -> bool:
+        return self.mode == "adult"
+
 
 def load() -> Config:
+    mode = os.environ.get("CLAUDIA_MODE", "adult")
+    if mode not in ("adult", "kid"):
+        raise ValueError(f"CLAUDIA_MODE must be adult|kid, got {mode!r}")
+
     ops_mode = os.environ.get("CLAUDIA_OPS_MODE", "prod")
     if ops_mode not in ("local", "dev", "prod"):
         raise ValueError(f"CLAUDIA_OPS_MODE must be local|dev|prod, got {ops_mode!r}")
@@ -64,27 +91,34 @@ def load() -> Config:
 
     default_model = os.environ.get("CLAUDIA_DEFAULT_MODEL", "claude-sonnet-4-6")
     dev_model = os.environ.get("CLAUDIA_DEV_MODEL", "claude-haiku-4-5-20251001")
+    classifier_model = os.environ.get("CLAUDIA_MODEL_CLASSIFIER", "claude-haiku-4-5-20251001")
+
+    display_name = os.environ.get("CLAUDIA_DISPLAY_NAME", "")
+    country = os.environ.get("CLAUDIA_COUNTRY", "AU")
+    ingress_host = os.environ.get("CLAUDIA_INGRESS_HOST", "claudia.example.com")
+    kid_parent_display_name = os.environ.get("CLAUDIA_KID_PARENT_DISPLAY_NAME", "your parents")
+
+    nudge_raw = os.environ.get("CLAUDIA_KID_SAFETY_SESSION_NUDGE_MINUTES", "[60, 90]")
+    try:
+        nudges = json.loads(nudge_raw)
+        assert isinstance(nudges, list) and all(isinstance(n, int) for n in nudges)
+    except (json.JSONDecodeError, AssertionError):
+        nudges = [60, 90]
 
     google_client_id = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "")
     google_client_secret = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "")
-    # Default redirect host inferred from CLAUDIA_INGRESS_HOST (set by the chart);
-    # explicit override always wins.
-    ingress_host = os.environ.get("CLAUDIA_INGRESS_HOST", "claudia.example.com")
     google_redirect_uri = os.environ.get(
         "GOOGLE_OAUTH_REDIRECT_URI", f"https://{ingress_host}/oauth/callback"
     )
 
     if ops_mode in ("dev", "prod"):
         if not api_key:
-            raise RuntimeError(
-                "ANTHROPIC_API_KEY is required in dev/prod mode"
-            )
+            raise RuntimeError("ANTHROPIC_API_KEY is required in dev/prod mode")
         if not auth_pw:
-            raise RuntimeError(
-                "BASIC_AUTH_PASSWORD is required in dev/prod mode"
-            )
+            raise RuntimeError("BASIC_AUTH_PASSWORD is required in dev/prod mode")
 
     return Config(
+        mode=mode,  # type: ignore[arg-type]
         ops_mode=ops_mode,  # type: ignore[arg-type]
         data_root=data_root,
         prompts_dir=prompts_dir,
@@ -93,6 +127,12 @@ def load() -> Config:
         basic_auth_password=auth_pw,
         default_model=default_model,
         dev_model=dev_model,
+        classifier_model=classifier_model,
+        display_name=display_name,
+        country=country,
+        ingress_host=ingress_host,
+        kid_parent_display_name=kid_parent_display_name,
+        kid_session_nudge_minutes=nudges,
         google_client_id=google_client_id,
         google_client_secret=google_client_secret,
         google_redirect_uri=google_redirect_uri,

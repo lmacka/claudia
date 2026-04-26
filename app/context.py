@@ -34,10 +34,20 @@ class SystemPromptBlocks:
 
 
 class ContextLoader:
-    def __init__(self, data_root: Path, prompts_dir: Path) -> None:
+    def __init__(
+        self,
+        data_root: Path,
+        prompts_dir: Path,
+        mode: str = "adult",
+        display_name: str = "",
+        kid_parent_display_name: str = "your parents",
+    ) -> None:
         self.data_root = data_root
         self.prompts_dir = prompts_dir
         self.context_dir = data_root / "context"
+        self.mode = mode
+        self.display_name = display_name
+        self.kid_parent_display_name = kid_parent_display_name
 
     def _read(self, path: Path) -> str:
         try:
@@ -124,22 +134,57 @@ class ContextLoader:
     def _app_feedback_tail(self, max_bytes: int = 2048) -> str:
         return self._read_last(self.data_root / "app-feedback.md", max_bytes).strip()
 
-    def assemble(self) -> SystemPromptBlocks:
-        # Block 1 — stable, cached
-        companion = self._read(self.prompts_dir / "companion.md")
-        stable_files = [
-            "SKILL.md",
-            "01_background.md",
-            "02_patterns.md",
-            "03_therapy_history.md",
-            "04_relationship_map.md",
-            "06_interpretive_notes.md",
-        ]
+    def assemble(self, frame_tag: str = "") -> SystemPromptBlocks:
+        # Block 1 — stable, cached. Mode picks which companion prompt loads
+        # (companion-adult.md vs companion-kid.md) plus which context files
+        # are included. Kid mode uses a smaller, more targeted context set.
+        companion_file = f"companion-{self.mode}.md"
+        companion = self._read(self.prompts_dir / companion_file)
+
+        # Substitute display-name placeholders in the kid prompt so the model
+        # knows what to call the kid and how to refer to the parent.
+        if self.mode == "kid":
+            companion = (
+                companion
+                .replace("{{DISPLAY_NAME}}", self.display_name or "the kid")
+                .replace("{{PARENT_DISPLAY_NAME}}", self.kid_parent_display_name)
+            )
+
+        if self.mode == "kid":
+            # Kid mode: minimal context. The parent has typically just
+            # populated context/01_background.md; the rest of the adult-mode
+            # files don't apply.
+            stable_files = [
+                "01_background.md",
+                "04_relationship_map.md",
+            ]
+        else:
+            stable_files = [
+                "SKILL.md",
+                "01_background.md",
+                "02_patterns.md",
+                "03_therapy_history.md",
+                "04_relationship_map.md",
+                "06_interpretive_notes.md",
+            ]
+
         stable_parts = [f"# COMPANION PROMPT\n\n{companion}"]
         for name in stable_files:
             content = self._read(self.context_dir / name).strip()
             if content:
                 stable_parts.append(f"# {name}\n\n{content}")
+
+        # Frame-tag dispatch (per /plan-eng-review D9): kid action buttons
+        # post a `frame=<tag>` along with their message. The companion prompt
+        # has tag-keyed behaviour blocks; we just inject the active tag here
+        # so the model sees it as part of its system context.
+        if frame_tag:
+            stable_parts.append(
+                f"# ACTIVE FRAME\n\n"
+                f"The user just clicked the action button for `frame={frame_tag}`. "
+                "Apply the matching behaviour block from the companion prompt."
+            )
+
         block1 = "\n\n---\n\n".join(stable_parts)
 
         # Block 2 — rotated

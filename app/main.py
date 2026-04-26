@@ -159,7 +159,13 @@ async def lifespan(app: FastAPI):
         (cfg.data_root / sub).mkdir(parents=True, exist_ok=True)
 
     state.store = InMemorySessionStore() if cfg.is_local else NFSSessionStore(cfg.data_root)
-    state.loader = ContextLoader(cfg.data_root, cfg.prompts_dir)
+    state.loader = ContextLoader(
+        cfg.data_root,
+        cfg.prompts_dir,
+        mode=cfg.mode,
+        display_name=cfg.display_name,
+        kid_parent_display_name=cfg.kid_parent_display_name,
+    )
     state.claude = None if cfg.is_local else ClaudeClient(api_key=cfg.anthropic_api_key)
 
     try:
