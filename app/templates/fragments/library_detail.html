@@ -1,0 +1,52 @@
+{# Doc detail panel — loaded into the row's details when expanded.
+   Expects: meta, extracted_preview, extracted_truncated, verification. #}
+<div class="library-detail">
+  <p>
+    <small class="muted">
+      <code>{{ meta.id }}</code><br>
+      Extractor: <strong>{{ meta.extractor }}</strong>
+      {%- if meta.page_count %} · {{ meta.page_count }} pages{% endif %}
+      · {{ meta.extracted_chars }} extracted chars
+    </small>
+  </p>
+
+  {% if meta.participants %}
+    <p><small><strong>Participants:</strong> {{ meta.participants | join(", ") }} · {{ meta.message_count or 0 }} messages</small></p>
+  {% endif %}
+
+  <details>
+    <summary><strong>Extracted text preview</strong></summary>
+    <pre style="white-space: pre-wrap; max-height: 400px; overflow-y: auto; font-size: 0.85em;">{{ extracted_preview }}{% if extracted_truncated %}
+
+… (truncated; full text used by claudia){% endif %}</pre>
+  </details>
+
+  {% if verification.checks %}
+  <details>
+    <summary><strong>Verification</strong> — {{ verification.status or "?" }}</summary>
+    <ul>
+      {% for check in verification.checks %}
+        <li>
+          <small>{% if check.ok %}✓{% else %}✗{% endif %} <code>{{ check.name }}</code> — {{ check.detail }}</small>
+        </li>
+      {% endfor %}
+    </ul>
+  </details>
+  {% endif %}
+
+  <form method="post" action="/library/{{ meta.id }}/tags" class="inline-form">
+    <label><small>Edit tags</small></label>
+    <input type="text" name="tags" value="{{ meta.tags | join(', ') }}" style="font-size: 0.85em;">
+    <button type="submit" class="outline" style="font-size: 0.85em;">Save tags</button>
+  </form>
+
+  <form method="post" action="/library/{{ meta.id }}/supersede" enctype="multipart/form-data" class="inline-form">
+    <label><small>Replace with newer version</small></label>
+    <input type="file" name="file" required style="font-size: 0.85em;">
+    <button type="submit" class="outline" style="font-size: 0.85em;">Supersede</button>
+  </form>
+
+  <form method="post" action="/library/{{ meta.id }}/retry" class="inline-form">
+    <button type="submit" class="outline secondary" style="font-size: 0.85em;">Retry extraction</button>
+  </form>
+</div>

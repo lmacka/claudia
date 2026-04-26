@@ -30,6 +30,7 @@ import secrets
 from contextlib import asynccontextmanager
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import structlog
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, status
@@ -45,10 +46,12 @@ from fastapi.templating import Jinja2Templates
 
 from app import auth as auth_mod
 from app import config as config_module
-from app import google_auth, safety
+from app import google_auth, library_pipeline, safety
 from app import summariser as summariser_mod
 from app import tool_loop as tool_loop_mod
 from app.claude import SONNET, ClaudeClient, Usage
+from app.extractors import build_registry, make_vision_callables
+from app.library import Library
 from app.context import TZ as BRISBANE_TZ
 from app.context import ContextLoader
 from app.google_auth import GoogleAuthConfig
@@ -110,6 +113,8 @@ class AppState:
     app_root: Path
     rate_limiter: auth_mod.IPRateLimiter
     kid_sessions: dict[str, str]  # cookie token -> kid_session_id (in-memory)
+    library: Library
+    extractor_registry: Any
 
 
 state = AppState()
@@ -158,7 +163,7 @@ async def lifespan(app: FastAPI):
     state.cfg = cfg
     state.app_root = Path(__file__).resolve().parent
 
-    for sub in ("sessions", "session-logs", "uploads", "context", "session-exports", ".locks"):
+    for sub in ("sessions", "session-logs", "uploads", "context", "session-exports", "library", "people", ".locks"):
         (cfg.data_root / sub).mkdir(parents=True, exist_ok=True)
 
     state.store = InMemorySessionStore() if cfg.is_local else NFSSessionStore(cfg.data_root)
@@ -172,6 +177,13 @@ async def lifespan(app: FastAPI):
     state.claude = None if cfg.is_local else ClaudeClient(api_key=cfg.anthropic_api_key)
     state.rate_limiter = auth_mod.IPRateLimiter()
     state.kid_sessions = {}
+
+    state.library = Library(cfg.data_root / "library")
+    if state.claude is not None:
+        transcribe, spot_check = make_vision_callables(state.claude, model=SONNET)
+    else:
+        transcribe, spot_check = None, None
+    state.extractor_registry = build_registry(transcribe=transcribe, spot_check=spot_check)
 
     try:
         rebuild_index(cfg.data_root)
@@ -1537,6 +1549,271 @@ def _persist_turns_to_store(
         final_msg = Message(role="assistant", content=fallback_text)
         state.store.append_message(session_id, final_msg)
     return final_msg
+
+
+# ---------------------------------------------------------------------------
+# /library/* — unified library management (commit D of Step 3)
+# ---------------------------------------------------------------------------
+
+
+_LIBRARY_MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # 25 MB; matches legacy /upload cap
+
+
+def require_library_access(
+    request: Request,
+    credentials: HTTPBasicCredentials | None = Depends(_basic_auth),
+    admin_credentials: HTTPBasicCredentials | None = Depends(_admin_basic_auth),
+) -> str:
+    """
+    Library access shape:
+      - local mode: pass.
+      - kid mode: parent-admin only (kid doesn't manage library).
+      - adult mode: regular adult auth.
+    """
+    cfg = state.cfg
+    if cfg.is_local:
+        return "liam"
+    if cfg.is_kid:
+        if admin_credentials is not None and _check_basic_credentials(admin_credentials):
+            return admin_credentials.username
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="library is parent-admin only in kid mode",
+            headers={"WWW-Authenticate": 'Basic realm="claudia-admin"'},
+        )
+    if credentials is None or not _check_basic_credentials(credentials):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized",
+            headers={"WWW-Authenticate": 'Basic realm="claudia"'},
+        )
+    return credentials.username
+
+
+@app.get("/library", response_class=HTMLResponse)
+async def library_index(
+    request: Request, _: str = Depends(require_library_access)
+) -> HTMLResponse:
+    active = state.library.list_active()
+    archived = state.library.list_archived()
+    return state.templates.TemplateResponse(
+        request,
+        "library.html",
+        {"active": active, "archived": archived},
+    )
+
+
+@app.post("/library/upload")
+async def library_upload(
+    request: Request, _: str = Depends(require_library_access)
+) -> Response:
+    form = await request.form()
+    upload = form.get("file")
+    if upload is None or not hasattr(upload, "filename"):
+        raise HTTPException(400, "no file in request")
+    raw_title = (form.get("title") or "").strip() or upload.filename or "Untitled"
+    raw_tags = [t.strip() for t in (form.get("tags") or "").split(",") if t.strip()]
+    body = await upload.read()
+    if len(body) > _LIBRARY_MAX_UPLOAD_BYTES:
+        raise HTTPException(413, f"upload exceeds {_LIBRARY_MAX_UPLOAD_BYTES} bytes")
+    if not body:
+        raise HTTPException(400, "empty upload")
+
+    doc_id = library_pipeline.process_doc_creation(
+        state.library,
+        state.extractor_registry,
+        title=raw_title,
+        original_bytes=body,
+        filename=upload.filename,
+        mime=upload.content_type or "application/octet-stream",
+        source="upload",
+        tags=raw_tags,
+    )
+    return RedirectResponse(url=f"/library#{doc_id}", status_code=303)
+
+
+@app.post("/library/paste")
+async def library_paste(
+    request: Request, _: str = Depends(require_library_access)
+) -> Response:
+    form = await request.form()
+    text = (form.get("text") or "").strip()
+    if not text:
+        raise HTTPException(400, "empty paste")
+    raw_title = (form.get("title") or "").strip()
+    raw_tags = [t.strip() for t in (form.get("tags") or "").split(",") if t.strip()]
+    if not raw_title:
+        # Title heuristic: first non-empty line, max 80 chars.
+        from app.extractors import TextExtractor
+
+        raw_title = TextExtractor.title_from_text(text, fallback="Pasted note")
+
+    body = text.encode("utf-8")
+    doc_id = library_pipeline.process_doc_creation(
+        state.library,
+        state.extractor_registry,
+        title=raw_title,
+        original_bytes=body,
+        filename="paste.txt",
+        mime="text/plain",
+        source="paste",
+        tags=raw_tags,
+    )
+    return RedirectResponse(url=f"/library#{doc_id}", status_code=303)
+
+
+@app.get("/library/{doc_id}", response_class=HTMLResponse)
+async def library_doc_detail(
+    doc_id: str, request: Request, _: str = Depends(require_library_access)
+) -> HTMLResponse:
+    meta = state.library.get(doc_id)
+    if meta is None:
+        raise HTTPException(404, f"doc {doc_id} not found")
+    extracted = state.library.get_extracted(doc_id) or ""
+    verification = state.library.get_verification(doc_id) or {}
+    return state.templates.TemplateResponse(
+        request,
+        "fragments/library_detail.html",
+        {
+            "meta": meta,
+            "extracted_preview": extracted[:5000],
+            "extracted_truncated": len(extracted) > 5000,
+            "verification": verification,
+        },
+    )
+
+
+@app.post("/library/{doc_id}/tags")
+async def library_doc_tags(
+    doc_id: str, request: Request, _: str = Depends(require_library_access)
+) -> Response:
+    form = await request.form()
+    tags = [t.strip() for t in (form.get("tags") or "").split(",") if t.strip()]
+    state.library.update_meta(doc_id, tags=tags)
+    return RedirectResponse(url=f"/library#{doc_id}", status_code=303)
+
+
+@app.post("/library/{doc_id}/supersede")
+async def library_doc_supersede(
+    doc_id: str, request: Request, _: str = Depends(require_library_access)
+) -> Response:
+    form = await request.form()
+    upload = form.get("file")
+    if upload is None or not hasattr(upload, "filename"):
+        raise HTTPException(400, "no file in request")
+    raw_title = (form.get("title") or "").strip() or upload.filename or "Updated"
+    body = await upload.read()
+    if len(body) > _LIBRARY_MAX_UPLOAD_BYTES:
+        raise HTTPException(413, "upload too large")
+    if not body:
+        raise HTTPException(400, "empty upload")
+
+    new_id = library_pipeline.process_doc_creation(
+        state.library,
+        state.extractor_registry,
+        title=raw_title,
+        original_bytes=body,
+        filename=upload.filename,
+        mime=upload.content_type or "application/octet-stream",
+        source="upload",
+        supersedes=doc_id,
+    )
+    new_meta = state.library.get(new_id)
+    if new_meta is None:
+        raise HTTPException(500, "supersede: failed to read back new meta")
+    state.library.supersede(doc_id, new_meta)
+    return RedirectResponse(url=f"/library#{new_id}", status_code=303)
+
+
+@app.post("/library/{doc_id}/delete")
+async def library_doc_soft_delete(
+    doc_id: str, _: str = Depends(require_library_access)
+) -> Response:
+    try:
+        state.library.soft_delete(doc_id)
+    except KeyError:
+        raise HTTPException(404, f"doc {doc_id} not found")
+    return Response(status_code=204)
+
+
+@app.post("/library/{doc_id}/restore")
+async def library_doc_restore(
+    doc_id: str, _: str = Depends(require_library_access)
+) -> Response:
+    try:
+        state.library.restore(doc_id)
+    except KeyError:
+        raise HTTPException(404, f"doc {doc_id} not found")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return RedirectResponse(url=f"/library#{doc_id}", status_code=303)
+
+
+@app.post("/library/{doc_id}/purge")
+async def library_doc_hard_delete(
+    doc_id: str, _: str = Depends(require_library_access)
+) -> Response:
+    try:
+        state.library.hard_delete(doc_id)
+    except KeyError:
+        raise HTTPException(404, f"doc {doc_id} not found")
+    return Response(status_code=204)
+
+
+@app.post("/library/{doc_id}/retry")
+async def library_doc_retry(
+    doc_id: str, _: str = Depends(require_library_access)
+) -> Response:
+    """Re-run extraction against the original bytes (e.g. after extractor upgrade)."""
+    meta = state.library.get(doc_id)
+    if meta is None:
+        raise HTTPException(404, f"doc {doc_id} not found")
+    original_path = state.library.get_original_path(doc_id)
+    if original_path is None:
+        raise HTTPException(500, "original file missing")
+    body = original_path.read_bytes()
+
+    new_id = library_pipeline.process_doc_creation(
+        state.library,
+        state.extractor_registry,
+        title=meta.title,
+        original_bytes=body,
+        filename=original_path.name,
+        mime=meta.mime,
+        source=meta.source,
+        tags=meta.tags,
+        supersedes=doc_id,
+    )
+    new_meta = state.library.get(new_id)
+    if new_meta is not None:
+        state.library.supersede(doc_id, new_meta)
+    return RedirectResponse(url=f"/library#{new_id}", status_code=303)
+
+
+@app.post("/library/{doc_id}/date")
+async def library_doc_set_date(
+    doc_id: str, request: Request, _: str = Depends(require_library_access)
+) -> Response:
+    form = await request.form()
+    value = (form.get("date") or "").strip()
+    if value == "" or value == "unknown":
+        state.library.update_meta(doc_id, original_date=None, original_date_source="unknown")
+    elif value == "use_upload_date":
+        meta = state.library.get(doc_id)
+        if meta is None:
+            raise HTTPException(404, f"doc {doc_id} not found")
+        state.library.update_meta(
+            doc_id,
+            original_date=meta.created_at.date(),
+            original_date_source="user_supplied",
+        )
+    else:
+        try:
+            d = date.fromisoformat(value)
+        except ValueError:
+            raise HTTPException(400, f"date must be ISO YYYY-MM-DD, got {value!r}")
+        state.library.update_meta(doc_id, original_date=d, original_date_source="user_supplied")
+    return RedirectResponse(url=f"/library#{doc_id}", status_code=303)
 
 
 # ---------------------------------------------------------------------------

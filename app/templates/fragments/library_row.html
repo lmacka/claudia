@@ -1,0 +1,44 @@
+{# Single row of the active library table.
+   Expects: doc (a LibraryDocMeta dict-like). #}
+<tr id="{{ doc.id }}">
+  <td>
+    <details>
+      <summary><strong>{{ doc.title }}</strong></summary>
+      <div hx-get="/library/{{ doc.id }}" hx-trigger="toggle once from:closest details" hx-target="this" hx-swap="innerHTML">
+        <small class="muted"><em>loading…</em></small>
+      </div>
+    </details>
+  </td>
+  <td><small>{{ doc.kind }}</small></td>
+  <td>
+    {% if doc.original_date %}
+      <small>{{ doc.original_date }}</small>
+      <small class="muted">({{ doc.original_date_source or "?" }})</small>
+    {% else %}
+      <form method="post" action="/library/{{ doc.id }}/date" class="inline">
+        <input type="date" name="date" style="font-size: 0.8em; padding: 2px 4px;">
+        <button type="submit" class="outline" style="font-size: 0.8em;">set</button>
+      </form>
+    {% endif %}
+  </td>
+  <td><small>{{ (doc.size_bytes / 1024) | round(1) }} KB</small></td>
+  <td>
+    {% for tag in doc.tags %}
+      <span class="tag-chip"><small>{{ tag }}</small></span>
+    {% endfor %}
+  </td>
+  <td>
+    {% if doc.verification == "ok" %}<span title="ok" style="color: var(--pico-ins-color, #4caf50);">●</span>
+    {% elif doc.verification == "warn" %}<span title="warn" style="color: #d4a868;">●</span>
+    {% else %}<span title="failed" style="color: #c97676;">●</span>
+    {% endif %}
+  </td>
+  <td>
+    <form method="post" action="/library/{{ doc.id }}/delete" class="inline"
+          hx-post="/library/{{ doc.id }}/delete"
+          hx-confirm="Soft-delete '{{ doc.title }}'? You can restore it from Archived."
+          hx-target="closest tr" hx-swap="outerHTML">
+      <button type="submit" class="outline contrast" style="font-size: 0.8em;">Delete</button>
+    </form>
+  </td>
+</tr>

@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block title %}claudia — library{% endblock %}
+{% block content %}
+
+<header class="home-header">
+  <h1>library</h1>
+  <div class="home-meta">
+    <a href="/" class="muted"><small>← home</small></a>
+  </div>
+</header>
+
+<p class="muted">Documents claudia knows about. PDFs, screenshots, chat exports, pasted text.</p>
+
+<section class="library-add" style="margin-bottom: var(--r-space-6);">
+  <h2>Add new</h2>
+
+  <form method="post" action="/library/upload" enctype="multipart/form-data" style="margin-bottom: var(--r-space-4);">
+    <fieldset>
+      <legend><strong>Upload a file</strong></legend>
+      <label for="library-file">File (PDF, DOCX, DOC, image, .txt) — max 25 MB</label>
+      <input type="file" id="library-file" name="file" required>
+      <label for="library-title">Title (optional — defaults to filename)</label>
+      <input type="text" id="library-title" name="title" placeholder="e.g. DC Diagnostic — Liam Mackenzie">
+      <label for="library-tags">Tags (comma-separated, optional)</label>
+      <input type="text" id="library-tags" name="tags" placeholder="e.g. diagnostic, autism">
+      <button type="submit">Upload &amp; extract</button>
+    </fieldset>
+  </form>
+
+  <form method="post" action="/library/paste">
+    <fieldset>
+      <legend><strong>Paste text</strong></legend>
+      <label for="library-paste-title">Title (optional)</label>
+      <input type="text" id="library-paste-title" name="title" placeholder="(blank → first line)">
+      <label for="library-paste-tags">Tags (comma-separated)</label>
+      <input type="text" id="library-paste-tags" name="tags">
+      <label for="library-paste-text">Text</label>
+      <textarea id="library-paste-text" name="text" rows="6" required placeholder="Paste content (WhatsApp exports auto-detected)…"></textarea>
+      <button type="submit" class="secondary">Save paste</button>
+    </fieldset>
+  </form>
+</section>
+
+<section>
+  <h2>Active documents <small class="muted">({{ active|length }})</small></h2>
+  {% if not active %}
+    <p class="muted"><em>library is empty — upload above.</em></p>
+  {% else %}
+    <table class="library-table">
+      <thead>
+        <tr>
+          <th>Title</th>
+          <th>Kind</th>
+          <th>Original date</th>
+          <th>Size</th>
+          <th>Tags</th>
+          <th>Verified</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for doc in active %}
+          {% include "fragments/library_row.html" %}
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+</section>
+
+{% if archived %}
+<section style="margin-top: var(--r-space-6);">
+  <details>
+    <summary><strong>Archived</strong> <small class="muted">({{ archived|length }})</small></summary>
+    <table class="library-table" style="margin-top: var(--r-space-3);">
+      <thead>
+        <tr>
+          <th>Title</th>
+          <th>Kind</th>
+          <th>Status</th>
+          <th>Size</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for doc in archived %}
+          <tr id="{{ doc.id }}">
+            <td>{{ doc.title }}</td>
+            <td>{{ doc.kind }}</td>
+            <td>{{ doc.status }}{% if doc.superseded_by %} → <code>{{ doc.superseded_by }}</code>{% endif %}</td>
+            <td><small>{{ (doc.size_bytes / 1024) | round(1) }} KB</small></td>
+            <td>
+              {% if doc.status == "deleted" %}
+                <form method="post" action="/library/{{ doc.id }}/restore" class="inline">
+                  <button type="submit" class="outline">Restore</button>
+                </form>
+                <form method="post" action="/library/{{ doc.id }}/purge" class="inline"
+                      hx-post="/library/{{ doc.id }}/purge"
+                      hx-confirm="Permanently delete '{{ doc.title }}'? This cannot be undone."
+                      hx-target="closest tr" hx-swap="outerHTML">
+                  <button type="submit" class="outline contrast">Purge</button>
+                </form>
+              {% else %}
+                <span class="muted"><small>(superseded)</small></span>
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </details>
+</section>
+{% endif %}
+
+{% endblock %}

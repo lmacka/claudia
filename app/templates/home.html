@@ -3,11 +3,14 @@
 {% block content %}
 <header class="home-header">
   <h1>claudia</h1>
-  {% if claudia_mode == "kid" %}
-    <div class="home-meta">
+  <div class="home-meta">
+    {% if claudia_mode != "kid" %}
+      <a href="/library" class="muted"><small>library</small></a>
+    {% endif %}
+    {% if claudia_mode == "kid" %}
       <a href="/logout" class="muted"><small>log out</small></a>
-    </div>
-  {% endif %}
+    {% endif %}
+  </div>
 </header>
 
 {% if claudia_mode == "kid" %}
