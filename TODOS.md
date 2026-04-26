@@ -207,6 +207,58 @@ the auditor prompt.
 
 **Depends on:** v1 shipped + ≥4 weeks of Jasper-shaped use.
 
+## T-NEW-D — `/people/import-from-spine` route + UI
+
+**What:** Add the admin-one-shot route that reads
+`context/04_relationship_map.md`, posts it through Sonnet with a strict
+extraction prompt, and renders the proposed `{name, aliases, category,
+relationship, summary, important_context}` records as a checklist for
+review and commit.
+
+**Why:** Captured during commit H (Step 3 / library-people-plan). Dead
+code at first deploy because new users have no spine. Existing
+robo-therapist users (i.e. Liam himself) have one and need this to seed
+`/data/people/` cheaply.
+
+**Pros:** One-click migration for the only user with a pre-populated
+spine file. Saves manually re-typing ~12 records.
+
+**Cons:** Pure migration helper; useless for new users. Adds Sonnet API
+cost on a one-off operation that could be done via direct file editing.
+
+**Context:** Pseudocode in `docs/library-people-plan.md` "Seeding from
+04_relationship_map.md". Minimal v1 shape: read 04, POST to Sonnet,
+return JSON of proposed records, render as checklist via HTMX, on
+submit call `People.add` for each ticked entry.
+
+**Depends on:** v1 shipped (or whenever Liam's instance migrates from
+robo-therapist).
+
+## T-NEW-E — Migrate `save_gmail_attachment` to library pipeline
+
+**What:** Rewrite `app/tools/gmail.py:save_gmail_attachment_spec` to land
+attachments as first-class library docs with `source: gmail_attachment`
+via `library_pipeline.process_doc_creation`, instead of writing to the
+legacy `uploads/` filesystem path.
+
+**Why:** Captured during commit H. The library plan calls for this
+explicitly: "save_gmail_attachment writes via Library.add_upload(
+source='gmail_attachment')". Today the function still writes
+plaintext-only to `uploads/`; `read_document` accepts the legacy path
+via the fallback branch, so it still works.
+
+**Pros:** Gmail attachments get extracted text + verification + people-
+linking + supersede semantics like every other library doc.
+
+**Cons:** ~30 LoC change but introduces a Library dependency in
+gmail.py. Not blocking v1.
+
+**Context:** TODO comment is in place at `app/tools/gmail.py:328`.
+Wiring is straightforward: pass `state.library` + `state.extractor_registry`
+into `save_gmail_attachment_spec` (mirror the pattern in `READ_DOCUMENT_SPEC`).
+
+**Depends on:** Step 3 commit H landed (done).
+
 ## T-NEW-B — Wireframe regeneration after v1 design departures
 
 **What:** Update or regenerate `docs/wireframe/chat-kid.html`,

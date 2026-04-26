@@ -1,17 +1,24 @@
 """
 Document tools: read_document, list_documents, search_documents.
 
-Also: INDEX.md auto-generation on upload and on app startup.
+Rewritten in commit H against the unified Library (app/library.py). The
+legacy uploads/ filesystem path is supported for backwards compatibility
+during the migration window — read_document accepts either a doc_id
+('2026-04-25T12-30-45Z_dc-diagnostic') or a path ('uploads/pdfs/foo.pdf').
+
+INDEX.md is no longer generated to disk. Block 2 renders it dynamically
+from the Library manifest at request time (see app/context.py).
 """
 
 from __future__ import annotations
 
 import base64
-from dataclasses import dataclass
+from collections.abc import Callable
 from pathlib import Path
 
 import structlog
 
+from app.library import Library
 from app.tools.registry import ToolError, ToolSpec
 
 log = structlog.get_logger()
@@ -22,9 +29,11 @@ log = structlog.get_logger()
 # ---------------------------------------------------------------------------
 
 
+_LEGACY_PREFIXES = ("uploads/", "context/", "archives/", "session-exports/")
+
+
 def _safe_resolve(data_root: Path, rel_path: str) -> Path:
     rel = rel_path.lstrip("/").lstrip("\\")
-    # Strip a leading "data/" if the model includes it.
     if rel.startswith("data/"):
         rel = rel[len("data/") :]
     candidate = (data_root / rel).resolve()
@@ -35,29 +44,11 @@ def _safe_resolve(data_root: Path, rel_path: str) -> Path:
     return candidate
 
 
-# ---------------------------------------------------------------------------
-# PDF handling
-# ---------------------------------------------------------------------------
-
-
-def _pdf_to_text(path: Path, max_pages: int = 20) -> tuple[str, int, int]:
-    """Returns (text, total_pages, pages_extracted)."""
-    try:
-        from pypdf import PdfReader
-    except ImportError:  # pragma: no cover
-        raise ToolError("pypdf not available in container") from None
-    reader = PdfReader(str(path))
-    total = len(reader.pages)
-    if total == 0:
-        return ("(empty PDF)", 0, 0)
-    to_read = min(total, max_pages)
-    parts: list[str] = []
-    for i in range(to_read):
-        try:
-            parts.append(reader.pages[i].extract_text() or "")
-        except Exception:  # noqa: BLE001
-            parts.append(f"[page {i + 1}: extraction failed]")
-    return ("\n\n".join(parts).strip(), total, to_read)
+def _looks_like_legacy_path(s: str) -> bool:
+    s = s.lstrip("/").lstrip("\\")
+    if s.startswith("data/"):
+        s = s[len("data/") :]
+    return any(s.startswith(prefix) for prefix in _LEGACY_PREFIXES)
 
 
 # ---------------------------------------------------------------------------
@@ -65,283 +56,273 @@ def _pdf_to_text(path: Path, max_pages: int = 20) -> tuple[str, int, int]:
 # ---------------------------------------------------------------------------
 
 
-def _read_document_handler(data_root: Path) -> callable:
-    def _h(args: dict):
-        rel = args.get("path")
-        if not rel or not isinstance(rel, str):
-            raise ToolError("path is required (string)")
-        p = _safe_resolve(data_root, rel)
+_READ_CAP_BYTES = 1024 * 1024  # 1MB per spec; up from the legacy 200KB.
+
+_IMAGE_MIME_BY_SUFFIX = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+}
+
+
+def _parse_pages_range(value: str | None, total: int | None) -> tuple[int, int] | None:
+    """Parse 'N-M' inclusive (1-indexed) into (start, end) or return None."""
+    if not value:
+        return None
+    parts = value.replace(" ", "").split("-")
+    try:
+        if len(parts) == 1:
+            start = end = int(parts[0])
+        elif len(parts) == 2:
+            start, end = int(parts[0]), int(parts[1])
+        else:
+            raise ValueError
+    except ValueError:
+        raise ToolError(f"pages must be N or N-M, got {value!r}")
+    if start < 1 or end < start:
+        raise ToolError(f"pages range invalid: {value!r}")
+    if total is not None and start > total:
+        raise ToolError(f"pages start {start} > total {total}")
+    return start, end
+
+
+def _slice_by_pages(extracted: str, pages: tuple[int, int]) -> str:
+    """Slice 'extracted.md' (which has '## Page N' markers from the PdfExtractor)
+    to the requested page range. Falls back to whole content if no markers."""
+    import re as _re
+
+    if "## Page " not in extracted:
+        return extracted
+    # Split keeping the headers attached to their page text.
+    parts = _re.split(r"(?m)^## Page (\d+)\n", extracted)
+    # parts: [prefix, "1", "<text>", "2", "<text>", ...]
+    out: list[str] = []
+    for i in range(1, len(parts), 2):
+        try:
+            page_n = int(parts[i])
+        except ValueError:
+            continue
+        body = parts[i + 1] if i + 1 < len(parts) else ""
+        if pages[0] <= page_n <= pages[1]:
+            out.append(f"## Page {page_n}\n{body}")
+    return "\n".join(out) if out else extracted
+
+
+def _format_doc_for_model(library: Library, doc_id: str, pages: str | None) -> object:
+    """Render a library doc for read_document."""
+    meta = library.get(doc_id)
+    if meta is None:
+        raise ToolError(f"doc {doc_id!r} not found")
+
+    # Image kind: return vision block of the original.<ext>.
+    if meta.kind == "image":
+        original = library.get_original_path(doc_id)
+        if original is None:
+            raise ToolError(f"doc {doc_id!r} has no original file")
+        suffix = original.suffix.lower()
+        mime = _IMAGE_MIME_BY_SUFFIX.get(suffix, "image/png")
+        b64 = base64.b64encode(original.read_bytes()).decode("ascii")
+        date_line = (
+            f"Original date: {meta.original_date.isoformat()} (from {meta.original_date_source})"
+            if meta.original_date
+            else f"Original date: unknown — uploaded {meta.created_at.date().isoformat()}"
+        )
+        return [
+            {"type": "image", "source": {"type": "base64", "media_type": mime, "data": b64}},
+            {"type": "text", "text": f"[{meta.title}] {date_line}"},
+        ]
+
+    extracted = library.get_extracted(doc_id) or ""
+    page_range = _parse_pages_range(pages, meta.page_count)
+    if page_range is not None:
+        extracted = _slice_by_pages(extracted, page_range)
+
+    # 1MB cap with truncation note.
+    if len(extracted) > _READ_CAP_BYTES:
+        extracted = extracted[:_READ_CAP_BYTES] + (
+            f"\n\n[TRUNCATED at {_READ_CAP_BYTES} bytes — use pages: 'N-M' to fetch a slice]"
+        )
+
+    date_line = (
+        f"> Original date: {meta.original_date.isoformat()} (from {meta.original_date_source})"
+        if meta.original_date
+        else f"> Original date: unknown — uploaded {meta.created_at.date().isoformat()}"
+    )
+    header = (
+        f"# {meta.title}\n"
+        f"_{meta.kind} · `{doc_id}`_\n"
+        f"{date_line}\n"
+    )
+    if page_range is not None:
+        header += f"_pages: {page_range[0]}-{page_range[1]}_\n"
+    return f"{header}\n{extracted}"
+
+
+def _read_document_handler(library: Library, data_root: Path) -> Callable[[dict], object]:
+    def _h(args: dict) -> object:
+        ident = args.get("path") or args.get("id_or_path") or args.get("id")
+        if not ident or not isinstance(ident, str):
+            raise ToolError("path / id_or_path is required (string)")
+        ident = ident.strip()
+        pages = args.get("pages")
+        if pages is not None and not isinstance(pages, str):
+            raise ToolError("pages must be a string (e.g. '5-12')")
+
+        # Library doc_id first.
+        if not _looks_like_legacy_path(ident) and library.get(ident) is not None:
+            return _format_doc_for_model(library, ident, pages)
+
+        # Legacy filesystem path.
+        p = _safe_resolve(data_root, ident)
         if not p.exists():
-            raise ToolError(f"file not found: {rel}")
+            raise ToolError(f"not found as doc_id or path: {ident}")
         if p.is_dir():
-            raise ToolError(f"path is a directory: {rel}")
+            raise ToolError(f"path is a directory: {ident}")
 
         suffix = p.suffix.lower()
-
-        if suffix == ".pdf":
-            text, total, got = _pdf_to_text(p)
-            header = f"[PDF {rel} — {total} pages, extracted {got}]"
-            if total > got:
-                header += f"\n\n⚠ Only first {got} pages shown. Ask for specific page range if needed."
-            return header + "\n\n" + text
-
-        if suffix in (".png", ".jpg", ".jpeg", ".gif", ".webp"):
-            # Return as vision block
-            mime = {
-                ".png": "image/png",
-                ".jpg": "image/jpeg",
-                ".jpeg": "image/jpeg",
-                ".gif": "image/gif",
-                ".webp": "image/webp",
-            }[suffix]
-            data = base64.b64encode(p.read_bytes()).decode("ascii")
+        if suffix in _IMAGE_MIME_BY_SUFFIX:
+            mime = _IMAGE_MIME_BY_SUFFIX[suffix]
+            b64 = base64.b64encode(p.read_bytes()).decode("ascii")
             return [
-                {
-                    "type": "image",
-                    "source": {"type": "base64", "media_type": mime, "data": data},
-                },
-                {"type": "text", "text": f"[image loaded from {rel}]"},
+                {"type": "image", "source": {"type": "base64", "media_type": mime, "data": b64}},
+                {"type": "text", "text": f"[image loaded from {ident}]"},
             ]
-
-        # Text-ish files — read as UTF-8, best effort
         try:
-            text = p.read_text(encoding="utf-8")
-        except UnicodeDecodeError:
             text = p.read_text(encoding="utf-8", errors="replace")
-        # Cap at 200KB to avoid blowing the context
-        max_bytes = 200 * 1024
-        if len(text) > max_bytes:
-            text = text[:max_bytes] + f"\n\n[TRUNCATED at {max_bytes} bytes]"
-        return f"[{rel}]\n\n{text}"
+        except OSError as e:
+            raise ToolError(f"read failed: {e}") from e
+        if len(text) > _READ_CAP_BYTES:
+            text = text[:_READ_CAP_BYTES] + f"\n\n[TRUNCATED at {_READ_CAP_BYTES} bytes]"
+        return f"[{ident}]\n\n{text}"
 
     return _h
 
 
-READ_DOCUMENT_SPEC = lambda data_root: ToolSpec(
+READ_DOCUMENT_SPEC = lambda library, data_root: ToolSpec(  # noqa: E731
     name="read_document",
     description=(
-        "Read a file from Liam's data directory. Use for reading context files, "
-        "uploads, or source-material PDFs and images. Paths are relative to /data "
-        "(e.g. 'context/01_background.md' or 'uploads/pdfs/foo.pdf'). For PDFs, "
-        "returns extracted text of the first 20 pages with a truncation note if "
-        "longer. For images, returns the image for vision analysis. Do not use for "
-        "files outside /data."
+        "Read a document. Accepts EITHER a library doc_id (e.g. "
+        "'2026-04-25T12-30-45Z_dc-diagnostic') OR a legacy filesystem path "
+        "(e.g. 'context/01_background.md'). For library docs, returns the "
+        "pre-extracted markdown with an `Original date:` header line; "
+        "use `pages: 'N-M'` to slice big PDFs. For images, returns the "
+        "image as a vision block. 1MB read cap with truncation note."
     ),
     input_schema={
         "type": "object",
         "properties": {
             "path": {
                 "type": "string",
-                "description": "Relative path under /data, e.g. 'uploads/pdfs/foo.pdf'",
-            }
+                "description": "Library doc_id OR legacy path under /data",
+            },
+            "pages": {
+                "type": "string",
+                "description": "Optional page slice for paginated docs, e.g. '5-12' or '1' (1-indexed, inclusive).",
+            },
         },
         "required": ["path"],
     },
-    handler=_read_document_handler(data_root),
+    handler=_read_document_handler(library, data_root),
 )
 
 
 # ---------------------------------------------------------------------------
-# list_documents — reads INDEX.md (or generates if missing)
+# list_documents — returns library.render_index_md
 # ---------------------------------------------------------------------------
 
 
-def _list_documents_handler(data_root: Path) -> callable:
-    def _h(args: dict):
-        index_path = data_root / "context" / "INDEX.md"
-        if not index_path.exists():
-            rebuild_index(data_root)
-        if not index_path.exists():
-            return "INDEX.md is empty — no source-material or uploads yet."
-        return index_path.read_text(encoding="utf-8")
+def _list_documents_handler(library: Library) -> Callable[[dict], str]:
+    def _h(_args: dict) -> str:
+        return library.render_index_md()
 
     return _h
 
 
-LIST_DOCUMENTS_SPEC = lambda data_root: ToolSpec(
+LIST_DOCUMENTS_SPEC = lambda library: ToolSpec(  # noqa: E731
     name="list_documents",
     description=(
-        "List all indexed documents in context/source-material and uploads. "
-        "Returns INDEX.md, which is the auto-generated catalog of available files "
-        "with one-line descriptions. Use this before read_document when you don't "
-        "know what's available."
+        "List all active library documents as markdown. Each entry shows "
+        "title, original date (when known), kind, and tags. Use this when "
+        "you need to know what documents exist; the same list is in block 2 "
+        "of your system prompt at session start."
     ),
     input_schema={
         "type": "object",
         "properties": {},
-        "required": [],
+        "additionalProperties": False,
     },
-    handler=_list_documents_handler(data_root),
+    handler=_list_documents_handler(library),
 )
 
 
 # ---------------------------------------------------------------------------
-# search_documents — simple grep
+# search_documents — grep library/*/extracted.md
 # ---------------------------------------------------------------------------
 
 
-def _search_documents_handler(data_root: Path) -> callable:
-    def _h(args: dict):
+def _search_documents_handler(library: Library) -> Callable[[dict], str]:
+    def _h(args: dict) -> str:
         q = args.get("query")
         if not q or not isinstance(q, str):
             raise ToolError("query is required (string)")
         limit = int(args.get("limit") or 20)
         q_lower = q.lower()
-        roots = [
-            data_root / "context",
-            data_root / "uploads",
-            data_root / "archives",
-        ]
         hits: list[str] = []
-        for root in roots:
-            if not root.exists():
+        for meta in library.list_active():
+            extracted = library.get_extracted(meta.id)
+            if extracted is None:
                 continue
-            for p in root.rglob("*"):
-                if not p.is_file():
-                    continue
-                if p.suffix.lower() in (".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp"):
-                    if q_lower in p.name.lower():
-                        hits.append(f"{p.relative_to(data_root)} — (binary, filename match)")
+            haystack = extracted.lower()
+            idx = haystack.find(q_lower)
+            if idx < 0:
+                # Title match still counts.
+                if q_lower in meta.title.lower():
+                    hits.append(f"`{meta.id}` — {meta.title} (title match)")
                     if len(hits) >= limit:
                         break
-                    continue
-                try:
-                    text = p.read_text(encoding="utf-8", errors="ignore")
-                except OSError:
-                    continue
-                if q_lower not in text.lower():
-                    continue
-                # Grab a context snippet
-                idx = text.lower().find(q_lower)
-                start = max(0, idx - 80)
-                end = min(len(text), idx + len(q) + 80)
-                snippet = text[start:end].replace("\n", " ").strip()
-                hits.append(f"{p.relative_to(data_root)}:\n  … {snippet} …")
-                if len(hits) >= limit:
-                    break
+                continue
+            start = max(0, idx - 80)
+            end = min(len(extracted), idx + len(q) + 80)
+            snippet = extracted[start:end].replace("\n", " ").strip()
+            hits.append(f"`{meta.id}` — {meta.title}\n  … {snippet} …")
             if len(hits) >= limit:
                 break
         if not hits:
-            return f"No matches for {q!r} in /data"
+            return f"No matches for {q!r} in the library."
         return "\n\n".join(hits[:limit])
 
     return _h
 
 
-SEARCH_DOCUMENTS_SPEC = lambda data_root: ToolSpec(
+SEARCH_DOCUMENTS_SPEC = lambda library: ToolSpec(  # noqa: E731
     name="search_documents",
     description=(
-        "Grep-style text search across context/, uploads/, and archives/. "
-        "Returns matching files with short snippets. Use for finding things the "
-        "index doesn't describe (e.g. search for a specific name or phrase)."
+        "Substring search across the extracted text of every active library "
+        "document. Returns matching doc_ids with snippets. Use to find "
+        "specific names, dates, or phrases when the index alone isn't enough."
     ),
     input_schema={
         "type": "object",
         "properties": {
-            "query": {"type": "string", "description": "Case-insensitive substring to search for"},
-            "limit": {"type": "integer", "description": "Max results (default 20)"},
+            "query": {"type": "string", "description": "Case-insensitive substring."},
+            "limit": {"type": "integer", "description": "Max results (default 20)."},
         },
         "required": ["query"],
     },
-    handler=_search_documents_handler(data_root),
+    handler=_search_documents_handler(library),
 )
 
 
 # ---------------------------------------------------------------------------
-# INDEX.md generator
+# rebuild_index — kept as a no-op shim for legacy callers (e.g. gmail).
+# Block 2 reads from library.render_index_md() at request time, so an
+# on-disk INDEX.md is no longer needed.
 # ---------------------------------------------------------------------------
 
 
-@dataclass
-class IndexEntry:
-    path: str
-    size: int
-    description: str
-
-
-def _one_line_for(path: Path) -> str:
-    """Generate a one-line description for a file based on its name/content."""
-    suffix = path.suffix.lower()
-    name = path.stem.replace("_", " ").replace("-", " ")
-    if suffix == ".md":
-        # Pull first H1 or first non-empty line
-        try:
-            for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                if line.startswith("# "):
-                    return line[2:].strip()
-                return line[:120]
-        except OSError:
-            pass
-    if suffix == ".pdf":
-        return f"{name} (PDF)"
-    if suffix in (".png", ".jpg", ".jpeg", ".gif", ".webp"):
-        return f"{name} (image)"
-    if suffix == ".txt":
-        try:
-            first = path.read_text(encoding="utf-8", errors="ignore").splitlines()[0]
-            return first[:120]
-        except (OSError, IndexError):
-            pass
-    return name
-
-
-def rebuild_index(data_root: Path) -> Path:
-    """Scan context/source-material + uploads/ and write context/INDEX.md."""
-    ctx_dir = data_root / "context"
-    ctx_dir.mkdir(parents=True, exist_ok=True)
-    index_path = ctx_dir / "INDEX.md"
-
-    sections: list[tuple[str, list[IndexEntry]]] = []
-
-    for label, root in [
-        ("source-material", ctx_dir / "source-material"),
-        ("uploads", data_root / "uploads"),
-    ]:
-        entries: list[IndexEntry] = []
-        if root.exists():
-            for p in sorted(root.rglob("*")):
-                if not p.is_file():
-                    continue
-                if p.name.startswith("."):
-                    continue
-                try:
-                    size = p.stat().st_size
-                except OSError:
-                    size = 0
-                rel = str(p.relative_to(data_root))
-                entries.append(
-                    IndexEntry(
-                        path=rel, size=size, description=_one_line_for(p)
-                    )
-                )
-        sections.append((label, entries))
-
-    lines = ["# INDEX.md", "", "_auto-generated. Lists files available via `read_document`._", ""]
-    for label, entries in sections:
-        lines.append(f"## {label}")
-        lines.append("")
-        if not entries:
-            lines.append("_(none)_")
-            lines.append("")
-            continue
-        for e in entries:
-            lines.append(f"- `{e.path}` ({_human_size(e.size)}) — {e.description}")
-        lines.append("")
-
-    content = "\n".join(lines)
-    # Atomic write
-    tmp = index_path.with_suffix(".md.tmp")
-    tmp.write_text(content, encoding="utf-8")
-    tmp.replace(index_path)
-    return index_path
-
-
-def _human_size(n: int) -> str:
-    for unit in ("B", "KB", "MB", "GB"):
-        if n < 1024:
-            return f"{n:.0f}{unit}"
-        n /= 1024  # type: ignore[assignment]
-    return f"{n:.1f}TB"
+def rebuild_index(data_root: Path) -> Path | None:
+    """Legacy shim. Returns None; block 2 renders the index dynamically."""
+    log.debug("documents.rebuild_index_noop", data_root=str(data_root))
+    return None

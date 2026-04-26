@@ -157,9 +157,9 @@
       const res = await fetch('/upload', { method: 'POST', body });
       const j = await res.json();
       if (res.ok) {
-        status.textContent = `Saved to ${j.path}.`;
+        status.textContent = `Saved to ${j.doc_id}.`;
         document.getElementById('content').value +=
-          (document.getElementById('content').value ? ' ' : '') + `[uploaded: ${j.path}]`;
+          (document.getElementById('content').value ? ' ' : '') + `[uploaded: ${j.doc_id}]`;
       } else {
         status.textContent = `Upload failed: ${j.error || res.status}`;
       }
@@ -182,9 +182,9 @@
         const res = await fetch('/upload', { method: 'POST', body });
         const j = await res.json();
         if (res.ok) {
-          status.textContent = `Pasted image saved to ${j.path}.`;
+          status.textContent = `Pasted image saved to ${j.doc_id}.`;
           const ta = document.getElementById('content');
-          ta.value += (ta.value ? ' ' : '') + `[uploaded: ${j.path}]`;
+          ta.value += (ta.value ? ' ' : '') + `[uploaded: ${j.doc_id}]`;
         } else {
           status.textContent = `Paste failed: ${j.error || res.status}`;
         }
@@ -202,7 +202,7 @@
       const j = await res.json();
       if (res.ok) {
         const ta = document.getElementById('content');
-        ta.value += (ta.value ? ' ' : '') + `[pasted: ${j.path}]`;
+        ta.value += (ta.value ? ' ' : '') + `[pasted: ${j.doc_id}]`;
       }
     }
   }
@@ -218,9 +218,9 @@
     const j = await res.json();
     const status = document.querySelector('#upload-status small');
     if (res.ok) {
-      status.textContent = `Saved to ${j.path}.`;
+      status.textContent = `Saved to ${j.doc_id}.`;
       const ta = document.getElementById('content');
-      ta.value += (ta.value ? ' ' : '') + `[pasted: ${j.path}]`;
+      ta.value += (ta.value ? ' ' : '') + `[pasted: ${j.doc_id}]`;
     } else {
       status.textContent = `Paste failed: ${res.status}`;
     }

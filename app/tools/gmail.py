@@ -326,14 +326,10 @@ def _save_gmail_attachment_handler(cfg: GoogleAuthConfig, data_root: Path) -> Ca
         dest = dest_dir / f"{ts}_{safe}"
         dest.write_bytes(data)
 
-        # Rebuild index to include the new file
-        from app.tools.documents import rebuild_index
-
-        try:
-            rebuild_index(data_root)
-        except OSError:
-            pass
-
+        # TODO(library): rewrite this handler to write via library_pipeline
+        # so Gmail attachments land as first-class library docs with
+        # `source: gmail_attachment`. Today they still go to legacy uploads/
+        # which read_document accepts via the legacy-path branch.
         rel = str(dest.relative_to(data_root))
         return f"Saved {len(data)} bytes to {rel}"
 
@@ -421,56 +417,6 @@ def create_gmail_draft_spec(cfg: GoogleAuthConfig) -> ToolSpec:
     )
 
 
-# ---------------------------------------------------------------------------
-# propose_promote_upload (approval-gated; state-mutating)
-# ---------------------------------------------------------------------------
-
-
-def _propose_promote_upload_handler(data_root: Path, append_event: Callable) -> Callable:
-    def _h(args: dict):
-        upload_path = args.get("upload_path", "")
-        destination = args.get("destination", "")
-        rationale = args.get("rationale", "")
-        if not isinstance(upload_path, str) or not upload_path.startswith("uploads/"):
-            raise ToolError("upload_path must start with 'uploads/'")
-        if not isinstance(destination, str) or not destination.startswith("context/source-material/"):
-            raise ToolError("destination must start with 'context/source-material/'")
-        # Just record as a pending mutation event — the approval UI picks it up.
-        append_event(
-            "pending_promote_upload",
-            {
-                "upload_path": upload_path,
-                "destination": destination,
-                "rationale": rationale,
-            },
-        )
-        return (
-            f"Promotion proposed ({upload_path} → {destination}). "
-            "Will appear in session-end approval UI."
-        )
-
-    return _h
-
-
-def propose_promote_upload_spec(data_root: Path, append_event_for_session: Callable) -> ToolSpec:
-    return ToolSpec(
-        name="propose_promote_upload",
-        description=(
-            "Propose moving a file from uploads/ to context/source-material/. "
-            "Use when a saved upload turns out to be canonical context worth keeping. "
-            "Approval-gated — the move happens only if Liam approves at session end."
-        ),
-        input_schema={
-            "type": "object",
-            "properties": {
-                "upload_path": {"type": "string", "description": "e.g. uploads/pdfs/foo.pdf"},
-                "destination": {
-                    "type": "string",
-                    "description": "e.g. context/source-material/foo.pdf",
-                },
-                "rationale": {"type": "string", "description": "One-line reason"},
-            },
-            "required": ["upload_path", "destination", "rationale"],
-        },
-        handler=_propose_promote_upload_handler(data_root, append_event_for_session),
-    )
+# propose_promote_upload removed in commit H — the new library upload flow
+# lands docs as first-class library entries directly, so the
+# uploads/-→-context/source-material/ promotion step is no longer needed.

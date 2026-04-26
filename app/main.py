@@ -75,13 +75,11 @@ from app.tools.documents import (
     LIST_DOCUMENTS_SPEC,
     READ_DOCUMENT_SPEC,
     SEARCH_DOCUMENTS_SPEC,
-    rebuild_index,
 )
 from app.tools.gmail import (
     create_gmail_draft_spec,
     get_gmail_message_spec,
     get_gmail_thread_spec,
-    propose_promote_upload_spec,
     save_gmail_attachment_spec,
     search_gmail_spec,
 )
@@ -140,9 +138,9 @@ def _google_cfg(cfg: config_module.Config) -> GoogleAuthConfig:
 
 def _build_tool_registry(cfg: config_module.Config, session_id: str | None = None) -> ToolRegistry:
     reg = ToolRegistry()
-    reg.register(READ_DOCUMENT_SPEC(cfg.data_root))
-    reg.register(LIST_DOCUMENTS_SPEC(cfg.data_root))
-    reg.register(SEARCH_DOCUMENTS_SPEC(cfg.data_root))
+    reg.register(READ_DOCUMENT_SPEC(state.library, cfg.data_root))
+    reg.register(LIST_DOCUMENTS_SPEC(state.library))
+    reg.register(SEARCH_DOCUMENTS_SPEC(state.library))
     reg.register(list_people_spec(state.people))
     reg.register(lookup_person_spec(state.people, state.library))
     reg.register(search_people_spec(state.people))
@@ -157,10 +155,6 @@ def _build_tool_registry(cfg: config_module.Config, session_id: str | None = Non
         reg.register(list_calendar_events_spec(gcfg))
         reg.register(create_calendar_event_spec(gcfg))
         reg.register(update_calendar_event_spec(gcfg))
-        if session_id is not None:
-            def _append_event(kind: str, payload: dict) -> None:
-                state.store.append_event(session_id, kind, payload)
-            reg.register(propose_promote_upload_spec(cfg.data_root, _append_event))
     return reg
 
 
@@ -203,10 +197,8 @@ async def lifespan(app: FastAPI):
     state.status_bus.attach_loop(asyncio.get_running_loop())
     state.people = People(cfg.data_root / "people")
 
-    try:
-        rebuild_index(cfg.data_root)
-    except OSError as e:
-        log.warning("index.rebuild_failed_at_startup", error=str(e))
+    # Block 2 renders the library index dynamically — no INDEX.md write
+    # at startup needed.
 
     import time as _time
 
@@ -1445,20 +1437,11 @@ async def oauth_callback(request: Request, _: str = Depends(require_auth)) -> HT
 
 
 # ---------------------------------------------------------------------------
-# Uploads + paste
+# Legacy /upload + /session/{id}/paste — thin shims that forward to the
+# unified library pipeline. Marker shape preserved as `[uploaded: <doc_id>]`
+# / `[pasted: <doc_id>]` per spec; session_chat.html JS reads j.doc_id.
 # ---------------------------------------------------------------------------
 
-_MIME_TO_SUBDIR = {
-    "application/pdf": "pdfs",
-    "image/png": "images",
-    "image/jpeg": "images",
-    "image/jpg": "images",
-    "image/gif": "images",
-    "image/webp": "images",
-    "message/rfc822": "emails",
-    "text/plain": "pastes",
-    "text/markdown": "pastes",
-}
 _MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
 
@@ -1478,32 +1461,53 @@ async def upload(request: Request, _: str = Depends(require_auth)) -> Response:
     form = await request.form()
     upload_obj = form.get("file")
     if not hasattr(upload_obj, "filename") or not upload_obj.filename:  # type: ignore[union-attr]
-        return Response(content=json.dumps({"error": "no file field"}), status_code=400, media_type="application/json")
+        return Response(
+            content=json.dumps({"error": "no file field"}),
+            status_code=400,
+            media_type="application/json",
+        )
     file: UploadFile = upload_obj  # type: ignore[assignment]
     content_type = file.content_type or "application/octet-stream"
-    subdir = _MIME_TO_SUBDIR.get(content_type, "files")
-
-    data = await file.read()
-    if len(data) > _MAX_UPLOAD_BYTES:
+    body = await file.read()
+    if len(body) > _MAX_UPLOAD_BYTES:
         return Response(
             content=json.dumps({"error": f"file too large (max {_MAX_UPLOAD_BYTES} bytes)"}),
             status_code=413,
             media_type="application/json",
         )
+    if not body:
+        return Response(
+            content=json.dumps({"error": "empty upload"}),
+            status_code=400,
+            media_type="application/json",
+        )
 
-    dest_dir = state.cfg.data_root / "uploads" / subdir
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now(UTC).strftime("%Y-%m-%dT%H-%M-%SZ")
-    filename = f"{ts}_{_safe_filename(file.filename)}"
-    dest = dest_dir / filename
-    dest.write_bytes(data)
+    title = (file.filename or "Upload").rsplit(".", 1)[0] or "Upload"
     try:
-        rebuild_index(state.cfg.data_root)
-    except OSError as e:
-        log.warning("upload.index_rebuild_failed", error=str(e))
-    rel = str(dest.relative_to(state.cfg.data_root))
+        doc_id = library_pipeline.process_doc_creation(
+            state.library,
+            state.extractor_registry,
+            title=title,
+            original_bytes=body,
+            filename=file.filename,
+            mime=content_type,
+            source="upload",
+        )
+    except Exception as e:  # noqa: BLE001
+        log.exception("upload.pipeline_failed")
+        return Response(
+            content=json.dumps({"error": f"extraction failed: {e!s}"}),
+            status_code=500,
+            media_type="application/json",
+        )
     return Response(
-        content=json.dumps({"path": rel, "size": len(data), "mime": content_type}),
+        content=json.dumps(
+            {
+                "doc_id": doc_id,
+                "size": len(body),
+                "mime": content_type,
+            }
+        ),
         media_type="application/json",
     )
 
@@ -1518,21 +1522,30 @@ async def session_paste(session_id: str, request: Request, _: str = Depends(requ
     content = str(form.get("content", "")).strip()
     if not content:
         return Response(status_code=400, content="empty paste")
-    ts = datetime.now(UTC).strftime("%Y-%m-%dT%H-%M-%SZ")
     label = _safe_filename(str(form.get("label", "paste")))
-    dest_dir = state.cfg.data_root / "uploads" / "pastes"
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / f"{ts}_{label}.txt"
-    dest.write_text(content, encoding="utf-8")
+    title = label.replace("-", " ").strip() or "Pasted note"
+
     try:
-        rebuild_index(state.cfg.data_root)
-    except OSError:
-        pass
-    state.store.append_event(
-        session_id, "paste_saved", {"path": str(dest.relative_to(state.cfg.data_root))}
-    )
+        doc_id = library_pipeline.process_doc_creation(
+            state.library,
+            state.extractor_registry,
+            title=title,
+            original_bytes=content.encode("utf-8"),
+            filename=f"{label}.txt",
+            mime="text/plain",
+            source="paste",
+        )
+    except Exception as e:  # noqa: BLE001
+        log.exception("paste.pipeline_failed")
+        return Response(
+            content=json.dumps({"error": f"extraction failed: {e!s}"}),
+            status_code=500,
+            media_type="application/json",
+        )
+
+    state.store.append_event(session_id, "paste_saved", {"doc_id": doc_id})
     return Response(
-        content=json.dumps({"path": str(dest.relative_to(state.cfg.data_root))}),
+        content=json.dumps({"doc_id": doc_id}),
         media_type="application/json",
     )
 
