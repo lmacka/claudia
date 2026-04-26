@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}claudia — admin review{% endblock %}
+{% block content %}
+<header class="home-header">
+  <h1>review</h1>
+  <div class="home-meta">
+    <a href="/admin">&larr; admin</a>
+    <a href="/logout">log out</a>
+  </div>
+</header>
+
+<p class="muted">Claudia reads recent <em>session summaries</em> (not raw chat) and tells you what to know. The deliberate fallback you set up at install time.</p>
+
+{% if summary %}
+  <article class="panel" style="border: 1px solid var(--pico-muted-border-color); padding: var(--r-space-4); border-radius: var(--pico-border-radius);">
+    <h2 style="margin-top: 0;">last 7 days</h2>
+    <div style="white-space: pre-wrap;">{{ summary }}</div>
+
+    {% if themes %}
+      <h3>themes</h3>
+      <ul>
+        {% for t in themes %}<li>{{ t }}</li>{% endfor %}
+      </ul>
+    {% endif %}
+
+    <h3>safety classifier</h3>
+    <p>flag: <strong>{{ flag }}</strong></p>
+
+    {% if people_added %}
+      <h3>new people in the roster</h3>
+      <ul>
+        {% for p in people_added %}<li><strong>{{ p.name }}</strong>{% if p.relationship_short %} ({{ p.relationship_short }}){% endif %}</li>{% endfor %}
+      </ul>
+    {% endif %}
+  </article>
+{% else %}
+  <article class="empty-state">
+    <p>No sessions to summarise yet.</p>
+    <p class="muted"><small>Once {{ display_name }} has had a chat session, the auditor produces a themes-only precis. The meta-audit reads those and writes the paragraph above.</small></p>
+  </article>
+{% endif %}
+
+{% endblock %}

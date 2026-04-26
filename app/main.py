@@ -43,8 +43,10 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from app import auth as auth_mod
 from app import config as config_module
 from app import google_auth, safety
+from app import session_keys as session_keys_mod
 from app import summariser as summariser_mod
 from app import tool_loop as tool_loop_mod
 from app.claude import SONNET, ClaudeClient, Usage
@@ -107,6 +109,9 @@ class AppState:
     claude: ClaudeClient | None
     templates: Jinja2Templates
     app_root: Path
+    session_keys: session_keys_mod.SessionKeys
+    rate_limiter: auth_mod.IPRateLimiter
+    kid_sessions: dict[str, str]  # cookie token -> kid_session_id (in-memory)
 
 
 state = AppState()
@@ -167,6 +172,9 @@ async def lifespan(app: FastAPI):
         kid_parent_display_name=cfg.kid_parent_display_name,
     )
     state.claude = None if cfg.is_local else ClaudeClient(api_key=cfg.anthropic_api_key)
+    state.session_keys = session_keys_mod.SessionKeys()
+    state.rate_limiter = auth_mod.IPRateLimiter()
+    state.kid_sessions = {}
 
     try:
         rebuild_index(cfg.data_root)
@@ -198,29 +206,94 @@ app.mount("/static", StaticFiles(directory=str(Path(__file__).resolve().parent /
 
 
 # ---------------------------------------------------------------------------
-# Basic auth
+# Auth
 # ---------------------------------------------------------------------------
+#
+# Adult mode: Basic auth on every route, single password.
+# Kid mode:  Kid cookie (`claudia-kid`) on / and /session/*; Basic auth on
+#            /admin/* (separate password = parent admin). See
+#            /plan-eng-review D5 for the hardening posture.
+#
+# `require_auth` is the kid-or-adult auth dep used on everything that's
+# NOT /admin. `require_parent_admin` is the basic-auth dep on /admin.
 
 _basic_auth = HTTPBasic(realm="claudia", auto_error=False)
+_admin_basic_auth = HTTPBasic(realm="claudia-admin", auto_error=False)
 
 
-def require_auth(credentials: HTTPBasicCredentials | None = Depends(_basic_auth)) -> str:
+def _check_basic_credentials(credentials: HTTPBasicCredentials) -> bool:
+    cfg = state.cfg
+    user_ok = secrets.compare_digest(credentials.username, cfg.basic_auth_user)
+    pw_ok = secrets.compare_digest(credentials.password, cfg.basic_auth_password)
+    return user_ok and pw_ok
+
+
+def _client_ip(request: Request) -> str:
+    # X-Forwarded-For from the cluster ingress; fall back to direct.
+    xff = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+    if xff:
+        return xff
+    if request.client:
+        return request.client.host
+    return "unknown"
+
+
+def require_auth(
+    request: Request,
+    credentials: HTTPBasicCredentials | None = Depends(_basic_auth),
+) -> str:
+    """
+    Auth for the kid-facing surface (/, /session/*, etc.).
+
+    Adult mode: same as before — basic auth.
+    Kid mode: cookie-based session. Kid must have logged in via /login.
+    """
     cfg = state.cfg
     if cfg.is_local:
         return "liam"
-    if credentials is None:
+
+    if cfg.is_kid:
+        cookie = request.cookies.get(auth_mod.KID_COOKIE_NAME, "")
+        if cookie and cookie in state.kid_sessions:
+            return state.kid_sessions[cookie]
+        # No valid cookie — redirect to /login. We raise an exception
+        # the caller transforms into a redirect.
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="kid-not-logged-in",
+            headers={"Location": "/login"},
+        )
+
+    # Adult mode
+    if credentials is None or not _check_basic_credentials(credentials):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Unauthorized",
             headers={"WWW-Authenticate": 'Basic realm="claudia"'},
         )
-    user_ok = secrets.compare_digest(credentials.username, cfg.basic_auth_user)
-    pw_ok = secrets.compare_digest(credentials.password, cfg.basic_auth_password)
-    if not (user_ok and pw_ok):
+    return credentials.username
+
+
+def require_parent_admin(
+    credentials: HTTPBasicCredentials | None = Depends(_admin_basic_auth),
+) -> str:
+    """
+    Auth for /admin/* — parent admin password.
+    Only meaningful in kid mode; in adult mode the routes 404 anyway.
+    """
+    cfg = state.cfg
+    if cfg.is_local:
+        return "parent"
+    if not cfg.is_kid:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="admin routes are only available in kid mode",
+        )
+    if credentials is None or not _check_basic_credentials(credentials):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Unauthorized",
-            headers={"WWW-Authenticate": 'Basic realm="claudia"'},
+            headers={"WWW-Authenticate": 'Basic realm="claudia-admin"'},
         )
     return credentials.username
 
@@ -251,6 +324,194 @@ async def readyz() -> Response:
         log.error("readyz.write_failed", error=str(e))
         return PlainTextResponse("fail", status_code=503)
     return PlainTextResponse("ready")
+
+
+# ---------------------------------------------------------------------------
+# Auth: redirect kid-not-logged-in to /login
+# ---------------------------------------------------------------------------
+
+
+from fastapi.exceptions import HTTPException as _HTTPExc  # noqa: E402
+
+
+@app.exception_handler(_HTTPExc)
+async def _kid_login_redirect(request: Request, exc: _HTTPExc) -> Response:
+    if (
+        exc.status_code == 401
+        and exc.detail == "kid-not-logged-in"
+        and not request.url.path.startswith("/login")
+    ):
+        return RedirectResponse(url="/login", status_code=303)
+    headers = exc.headers or {}
+    return Response(
+        content=str(exc.detail),
+        status_code=exc.status_code,
+        headers=headers,
+    )
+
+
+# ---------------------------------------------------------------------------
+# /login (kid mode only) and /logout
+# ---------------------------------------------------------------------------
+
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request) -> HTMLResponse:
+    cfg = state.cfg
+    if not cfg.is_kid:
+        # Adult mode: shouldn't be here, just redirect home
+        return RedirectResponse(url="/", status_code=303)
+    is_first_time = not auth_mod.is_passphrase_set(cfg.data_root)
+    return state.templates.TemplateResponse(
+        request,
+        "kid_login.html",
+        {
+            "is_first_time": is_first_time,
+            "display_name": cfg.display_name,
+            "parent_display_name": cfg.kid_parent_display_name,
+        },
+    )
+
+
+@app.post("/login")
+async def login_submit(request: Request) -> Response:
+    cfg = state.cfg
+    if not cfg.is_kid:
+        return RedirectResponse(url="/", status_code=303)
+
+    ip = _client_ip(request)
+    if not state.rate_limiter.check(ip):
+        log.warning("kid_auth.rate_limited", ip=ip)
+        return Response(
+            content="Too many attempts. Try again in a few minutes.",
+            status_code=429,
+        )
+
+    form = await request.form()
+    passphrase = str(form.get("passphrase", ""))
+    confirm = str(form.get("confirm", ""))
+
+    is_first_time = not auth_mod.is_passphrase_set(cfg.data_root)
+
+    if is_first_time:
+        # Setup flow: passphrase + confirm
+        if passphrase != confirm:
+            return state.templates.TemplateResponse(
+                request,
+                "kid_login.html",
+                {
+                    "is_first_time": True,
+                    "display_name": cfg.display_name,
+                    "parent_display_name": cfg.kid_parent_display_name,
+                    "error": "The two passwords didn't match.",
+                },
+                status_code=400,
+            )
+        try:
+            auth_mod.set_passphrase(cfg.data_root, passphrase)
+        except ValueError as e:
+            return state.templates.TemplateResponse(
+                request,
+                "kid_login.html",
+                {
+                    "is_first_time": True,
+                    "display_name": cfg.display_name,
+                    "parent_display_name": cfg.kid_parent_display_name,
+                    "error": str(e),
+                },
+                status_code=400,
+            )
+        # First passphrase set; continue to login (verify path below)
+
+    # Login flow: verify
+    if not auth_mod.verify_passphrase(cfg.data_root, passphrase):
+        state.rate_limiter.record(ip)
+        log.warning("kid_auth.verify_failed", ip=ip)
+        return state.templates.TemplateResponse(
+            request,
+            "kid_login.html",
+            {
+                "is_first_time": False,
+                "display_name": cfg.display_name,
+                "parent_display_name": cfg.kid_parent_display_name,
+                "error": "That password didn't match. Try again.",
+            },
+            status_code=401,
+        )
+
+    state.rate_limiter.reset(ip)
+    token = auth_mod.new_kid_session_token()
+    state.kid_sessions[token] = cfg.display_name or "kid"
+    log.info("kid_auth.login_success", display_name=cfg.display_name)
+
+    resp = RedirectResponse(url="/", status_code=303)
+    resp.set_cookie(
+        key=auth_mod.KID_COOKIE_NAME,
+        value=token,
+        max_age=auth_mod.KID_COOKIE_TTL_SECONDS,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        path="/",
+    )
+    return resp
+
+
+@app.post("/logout")
+async def logout(request: Request) -> Response:
+    cfg = state.cfg
+    if cfg.is_kid:
+        cookie = request.cookies.get(auth_mod.KID_COOKIE_NAME, "")
+        if cookie:
+            state.kid_sessions.pop(cookie, None)
+            await state.session_keys.clear(cookie)
+    resp = RedirectResponse(url="/login", status_code=303)
+    resp.delete_cookie(auth_mod.KID_COOKIE_NAME, path="/")
+    return resp
+
+
+# ---------------------------------------------------------------------------
+# /admin/* (kid mode only) — parent admin
+# ---------------------------------------------------------------------------
+
+
+@app.get("/admin", response_class=HTMLResponse)
+@app.get("/admin/", response_class=HTMLResponse)
+async def admin_home(
+    request: Request,
+    _: str = Depends(require_parent_admin),
+) -> HTMLResponse:
+    cfg = state.cfg
+    sessions = state.store.list_sessions()
+    return state.templates.TemplateResponse(
+        request,
+        "admin/home.html",
+        {
+            "display_name": cfg.display_name,
+            "parent_display_name": cfg.kid_parent_display_name,
+            "session_count": len(sessions),
+        },
+    )
+
+
+@app.get("/admin/review", response_class=HTMLResponse)
+async def admin_review(
+    request: Request,
+    _: str = Depends(require_parent_admin),
+) -> HTMLResponse:
+    cfg = state.cfg
+    return state.templates.TemplateResponse(
+        request,
+        "admin/review.html",
+        {
+            "display_name": cfg.display_name,
+            "parent_display_name": cfg.kid_parent_display_name,
+            "summary": None,
+            "themes": [],
+            "flag": "none",
+            "people_added": [],
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
