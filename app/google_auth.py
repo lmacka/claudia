@@ -17,7 +17,6 @@ import os
 import secrets
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 import structlog
 from google.auth.transport.requests import Request as GoogleRequest
@@ -125,7 +124,7 @@ def _persist(token_path: Path, creds: Credentials) -> None:
     os.chmod(token_path, 0o600)
 
 
-def load_credentials(cfg: GoogleAuthConfig) -> Optional[Credentials]:
+def load_credentials(cfg: GoogleAuthConfig) -> Credentials | None:
     if not cfg.token_path.exists():
         return None
     try:

@@ -8,7 +8,7 @@ companion should still see the earlier turns in its system prompt.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -32,7 +32,7 @@ def _write_session_jsonl(
     data_root: Path, session_id: str, created_ago: timedelta, messages: list[tuple[str, str]]
 ) -> None:
     """Write a fake session JSONL with header + messages."""
-    created = (datetime.now(timezone.utc) - created_ago).isoformat()
+    created = (datetime.now(UTC) - created_ago).isoformat()
     path = data_root / "sessions" / f"{session_id}.jsonl"
     with path.open("w", encoding="utf-8") as fh:
         fh.write(
@@ -113,7 +113,7 @@ def test_synthetic_opener_is_skipped(data_root: Path, tmp_path: Path) -> None:
 
     # Synthetic opener message has is_synthetic_opener in meta and empty visible
     # content — manually simulate what the session starter writes.
-    created = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    created = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
     path = data_root / "sessions" / "2026-04-22T07-00-00Z_check-in_cccc3333.jsonl"
     with path.open("w", encoding="utf-8") as fh:
         fh.write(

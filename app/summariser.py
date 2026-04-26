@@ -10,9 +10,8 @@ Forced tool-use guarantees structured output — never returns text.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import structlog
@@ -45,7 +44,7 @@ class SummariserInput:
     messages: list[Message]
     current_state: str
     recent_session_logs: str = ""
-    timezone_now: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    timezone_now: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
 
 
 def _auditor_system_prompt(prompts_dir: Path) -> str:
@@ -258,7 +257,7 @@ def append_app_feedback(
     if not items:
         return None
     p = data_root / "app-feedback.md"
-    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    ts = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
     lines = [f"\n## {ts} — session {session_id}\n"]
     for it in items:
         q = it.quote.strip()

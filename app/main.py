@@ -28,7 +28,7 @@ import json
 import logging
 import secrets
 from contextlib import asynccontextmanager
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import structlog
@@ -230,7 +230,7 @@ async def metrics() -> str:
 async def readyz() -> Response:
     healthcheck_path = state.cfg.data_root / ".healthcheck"
     try:
-        healthcheck_path.write_text(datetime.now(timezone.utc).isoformat())
+        healthcheck_path.write_text(datetime.now(UTC).isoformat())
     except OSError as e:
         log.error("readyz.write_failed", error=str(e))
         return PlainTextResponse("fail", status_code=503)
@@ -343,7 +343,7 @@ async def session_new(
     session_id = new_session_id("session")
     header = SessionHeader(
         session_id=session_id,
-        created_at=datetime.now(timezone.utc).isoformat(),
+        created_at=datetime.now(UTC).isoformat(),
         mode="session",
         model=SONNET,
         prompt_sha="",
@@ -545,7 +545,7 @@ async def session_end(
     state.store.update_header(
         session_id,
         status="ended",
-        ended_at=datetime.now(timezone.utc).isoformat(),
+        ended_at=datetime.now(UTC).isoformat(),
     )
     state.store.append_event(session_id, "session_ended", {})
     log.info("session.ended", session_id=session_id)
@@ -587,7 +587,7 @@ def _append_mood(data_root: Path, session_id: str, regulation_score: int, ts: st
     p = data_root / "context" / "mood-log.jsonl"
     p.parent.mkdir(parents=True, exist_ok=True)
     entry = {
-        "ts": ts or datetime.now(timezone.utc).isoformat(),
+        "ts": ts or datetime.now(UTC).isoformat(),
         "session": session_id,
         "regulation_score": regulation_score,
     }
@@ -754,7 +754,7 @@ async def report_submit(request: Request, _: str = Depends(require_auth)) -> Res
         )
 
     pdf_path = _render_handover_pdf(state.cfg.data_root, start, end, markdown)
-    _write_last_export_ts(state.cfg.data_root, datetime.now(timezone.utc))
+    _write_last_export_ts(state.cfg.data_root, datetime.now(UTC))
     return FileResponse(path=str(pdf_path), filename=pdf_path.name, media_type="application/pdf")
 
 
@@ -1148,7 +1148,7 @@ async def upload(request: Request, _: str = Depends(require_auth)) -> Response:
 
     dest_dir = state.cfg.data_root / "uploads" / subdir
     dest_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
+    ts = datetime.now(UTC).strftime("%Y-%m-%dT%H-%M-%SZ")
     filename = f"{ts}_{_safe_filename(file.filename)}"
     dest = dest_dir / filename
     dest.write_bytes(data)
@@ -1173,7 +1173,7 @@ async def session_paste(session_id: str, request: Request, _: str = Depends(requ
     content = str(form.get("content", "")).strip()
     if not content:
         return Response(status_code=400, content="empty paste")
-    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
+    ts = datetime.now(UTC).strftime("%Y-%m-%dT%H-%M-%SZ")
     label = _safe_filename(str(form.get("label", "paste")))
     dest_dir = state.cfg.data_root / "uploads" / "pastes"
     dest_dir.mkdir(parents=True, exist_ok=True)

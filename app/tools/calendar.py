@@ -9,8 +9,8 @@ outside-voice feedback D).
 from __future__ import annotations
 
 import re
-from datetime import date, datetime, timedelta, timezone
-from typing import Callable
+from collections.abc import Callable
+from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import structlog
@@ -38,7 +38,7 @@ def _cal_service(cfg: GoogleAuthConfig):
 
 def _to_rfc3339(dt: datetime) -> str:
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
     return dt.isoformat()
 
 

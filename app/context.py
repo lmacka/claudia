@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -78,7 +78,7 @@ class ContextLoader:
         sessions_dir = self.data_root / "sessions"
         if not sessions_dir.exists():
             return ""
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=window_hours)
+        cutoff = datetime.now(UTC) - timedelta(hours=window_hours)
         parts: list[str] = []
         candidates = sorted(
             (p for p in sessions_dir.glob("*.jsonl") if ".bak-" not in p.name),

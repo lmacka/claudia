@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import base64
 import re
+from collections.abc import Callable
+from datetime import UTC
 from pathlib import Path
-from typing import Callable
 
 import structlog
 from googleapiclient.discovery import build
@@ -317,9 +318,9 @@ def _save_gmail_attachment_handler(cfg: GoogleAuthConfig, data_root: Path) -> Ca
         subdir = _MIME_TO_SUBDIR.get(mime_guess, "files")
 
         safe = re.sub(r"[^A-Za-z0-9._-]+", "-", filename).strip("-.") or "attachment"
-        from datetime import datetime, timezone
+        from datetime import datetime
 
-        ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
+        ts = datetime.now(UTC).strftime("%Y-%m-%dT%H-%M-%SZ")
         dest_dir = data_root / "uploads" / subdir
         dest_dir.mkdir(parents=True, exist_ok=True)
         dest = dest_dir / f"{ts}_{safe}"

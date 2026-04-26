@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -117,7 +117,7 @@ def test_report_404_when_no_sessions_in_range(client: TestClient) -> None:
 def test_report_generates_pdf_in_local_mode(client: TestClient) -> None:
     import app.main as main_module
 
-    today = datetime.now(timezone.utc)
+    today = datetime.now(UTC)
     _seed_session_jsonl(
         main_module.state.cfg.data_root,
         f"{today.strftime('%Y-%m-%dT%H-%M-%SZ')}_session_aaaa",
@@ -175,7 +175,7 @@ def test_collect_for_report_includes_spine_and_session_logs(tmp_path: Path) -> N
     _seed_session_jsonl(
         tmp_path,
         "2026-04-22T10-00-00Z_session_aaaa",
-        datetime(2026, 4, 22, 10, 0, tzinfo=timezone.utc),
+        datetime(2026, 4, 22, 10, 0, tzinfo=UTC),
         [("user", "rough day"), ("assistant", "what part?")],
     )
 

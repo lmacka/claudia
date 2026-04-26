@@ -23,7 +23,7 @@ import os
 import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -55,7 +55,7 @@ class SessionHeader:
 class Message:
     role: str  # "user" | "assistant" | "system_event"
     content: str
-    ts: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    ts: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
     meta: dict[str, Any] = field(default_factory=dict)
 
 
@@ -135,11 +135,10 @@ class NFSSessionStore:
 
     def _append(self, session_id: str, record: dict[str, Any]) -> None:
         path = self._session_path(session_id)
-        with self._lock(f"session-{session_id}"):
-            with path.open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps(record, separators=(",", ":")) + "\n")
-                fh.flush()
-                os.fsync(fh.fileno())
+        with self._lock(f"session-{session_id}"), path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, separators=(",", ":")) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
 
     # --- protocol methods --------------------------------------------------
 
@@ -167,7 +166,7 @@ class NFSSessionStore:
             {
                 "type": "event",
                 "event_type": event_type,
-                "ts": datetime.now(timezone.utc).isoformat(),
+                "ts": datetime.now(UTC).isoformat(),
                 "payload": payload,
             },
         )
@@ -197,7 +196,7 @@ class NFSSessionStore:
             session_id,
             {
                 "type": "header_update",
-                "ts": datetime.now(timezone.utc).isoformat(),
+                "ts": datetime.now(UTC).isoformat(),
                 "changes": changes,
             },
         )
@@ -219,7 +218,7 @@ class NFSSessionStore:
                             role=record["role"],
                             content=record["content"],
                             ts=record.get(
-                                "ts", datetime.now(timezone.utc).isoformat()
+                                "ts", datetime.now(UTC).isoformat()
                             ),
                             meta=record.get("meta", {}),
                         )
@@ -236,7 +235,7 @@ class NFSSessionStore:
                 continue
             try:
                 mtime = datetime.fromtimestamp(
-                    path.stat().st_mtime, tz=timezone.utc
+                    path.stat().st_mtime, tz=UTC
                 ).isoformat()
             except OSError:
                 mtime = header.created_at
@@ -331,6 +330,6 @@ class InMemorySessionStore:
 
 
 def new_session_id(mode: str) -> str:
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H-%M-%SZ")
     short = uuid.uuid4().hex[:8]
     return f"{now}_{mode}_{short}"
