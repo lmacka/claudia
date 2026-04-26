@@ -41,31 +41,61 @@ The fork has been done. The previous session left the repo in this state:
 
 ## What to do next (v1 build order, from `docs/design.md`)
 
+> Build order revised by /plan-eng-review on 2026-04-26 (D1): library + people
+> moved before the wizard. See `docs/design.md` "Decisions from /plan-eng-review"
+> for the full set of decisions that came out of that review.
+
 You are at **step 1** of the build order:
 
-1. **Repo + chart skeleton + CI** ← partially done, finish:
-   - Fill `chart/templates/` (deployment, service, ingress/httproute, pvc).
+1. **Repo + chart skeleton + CI + examples** ← partially done, finish:
+   - Fill `chart/templates/` (deployment, service, ingress.yaml AND
+     httproute.yaml gated by `ingress.gatewayApi`, pvc, _helpers.tpl).
      Reference `~/git/lmacka/coopernetes/kubernetes/apps/robo/app/` for the
      working robo-therapist manifests but **rewrite for generic k8s** — do
-     NOT inherit the Synology/coopernetes-specific assumptions.
+     NOT inherit the Synology/coopernetes-specific assumptions. Bake in
+     `securityContext` (runAsNonRoot, runAsUser 1000) and `fsGroup` for the
+     PVC. Run with swap disabled (per D2).
    - Write `.github/workflows/test.yml` (pytest on PR), `image.yml`
-     (docker build + push on tag), `chart.yml` (helm package + push to
-     ghcr.io as OCI artifact).
+     (docker buildx multi-arch amd64+arm64, push on tag), `chart.yml`
+     (helm package + push to ghcr.io as OCI artifact).
+   - Create `examples/adult-values.yaml` and `examples/kid-values.yaml`.
    - Confirm `helm template chart/ --values examples/adult-values.yaml`
      and `examples/kid-values.yaml` both render without errors and pass
      schema validation.
-2. Adult mode parity (lift app/, ship to Liam's cluster as a second deploy
+   - Trivial fixes: `pyproject.toml` rename `robo-therapist` → `claudia`,
+     add `cryptography` + `argon2-cffi` deps; Dockerfile system user
+     `robo` → `claudia`.
+2. **Adult mode parity** (lift app/, ship to Liam's cluster as a second deploy
    alongside robo-therapist for parallel-running validation).
-3. Three-stage setup wizard.
-4. Library + people from `docs/library-people-plan.md`.
-5. Memory-diff review screen.
-6. Kid mode persona + safety floor + two-role auth + `/admin` routes.
-7. OCR-discard kid attachment flow.
-8. Theme system + settings page.
-9. README + first-deploy walkthrough.
-10. Ship Jasper's instance.
+3. **Library + people + extractors** (per `docs/library-people-plan.md`).
+   *(Was step 4; moved earlier per D1.)*
+4. **Three-stage setup wizard**, depends on step 3 substrate.
+   *(Was step 3; moved later per D1.)*
+5. **Memory-diff review screen**.
+6. **Kid mode persona + safety floor + two-role auth + `/admin` routes**.
+   Includes `app/crypto.py` (per D4 append-friendly encrypted JSONL),
+   `app/session_keys.py` (per D2 KEK cache), `app/auth.py` (per D5 CSRF +
+   24h sliding expiry + IP rate limit), `app/safety.py` (Haiku
+   pre-classifier non-disableable per Premise 3), `app/meta_audit.py`
+   (per D7 cached + 7-day window), `app/profile.py` (per D8 Pydantic).
+7. **OCR-discard kid attachment flow** + people inline-prompt (with split
+   public/private notes per D14).
+8. **Theme system + settings page**.
+9. **README + first-deploy walkthrough**.
+10. **Ship Jasper's instance**.
 
-**~4-5 weeks of CC-time to v1** per the design doc estimate.
+**~4-5 weeks of CC-time to v1** per the design doc estimate (review notes:
+realistic 6-8 weeks given encryption + red-team complexity).
+
+## Active TODOs (deferred from v1)
+
+See `TODOS.md` for full context. Captured during /plan-eng-review:
+- T1 — people-prompt threshold tuning
+- T2 — adult attachment toggle
+- T3 — OCI vs Pages chart channel
+- T4 — v1.5 longitudinal harm patterns
+- T5 — OSS governance / handoff
+- T6 — wireframe-implementation parity rule
 
 ## Operating model
 

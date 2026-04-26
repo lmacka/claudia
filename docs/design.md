@@ -258,16 +258,21 @@ clickable mockup at `/tmp/claudia-mockup/` (12 HTML pages + shared CSS, dark
 attachments, two-role admin). The wireframe replaces the
 "build-then-discover-it's-wrong" failure mode.
 
-Build order:
+Build order (revised post-/plan-eng-review 2026-04-26 D1):
 
-1. Repo + chart skeleton + CI (week 1, half a day).
+1. Repo + chart skeleton + CI + examples (week 1, half a day). Includes
+   `examples/adult-values.yaml` and `examples/kid-values.yaml` so
+   `helm template chart/ --values examples/adult-values.yaml` renders
+   end-to-end.
 2. Adult mode parity: lift app/, add Helm chart, ship to Liam's cluster as a
    second deploy alongside robo-therapist for parallel-running validation
    (~1 week).
-3. Three-stage setup wizard (adult variant first; kid variant shares ~80%
-   of the code) (~3 days).
-4. Library + people (lifted from the breezy-fog plan, retargeted) (~1 week).
-5. Memory-diff review screen (post-auditor) (~2 days).
+3. Library + people + extractors (lifted from the breezy-fog plan,
+   retargeted) (~1 week). **Moved earlier** — wizard stage 2 depends on
+   this substrate; building wizard before extractors meant fake plumbing.
+4. Three-stage setup wizard (adult variant first; kid variant shares ~80%
+   of the code) (~3 days). **Moved later** — depends on Step 3.
+5. Memory-diff review screen (post-auditor) (~2 days, realistic 3-4 days).
 6. Kid mode persona + safety floor + two-role auth + `/admin` routes
    (~1 week).
 7. OCR-discard attachment flow + people inline-prompt (~3 days).
@@ -275,7 +280,8 @@ Build order:
 9. README + first-deploy walkthrough docs (~2 days).
 10. Ship Jasper's instance.
 
-**Total: ~4-5 weeks of CC-time.** robo-therapist freezes when step 2 lands
+**Total: ~4-5 weeks of CC-time** (review notes: realistic 6-8 weeks given
+encryption + red-team complexity). robo-therapist freezes when step 2 lands
 in Liam's cluster — he uses claudia adult-mode for his own therapy from that
 point.
 
@@ -769,3 +775,271 @@ written or partially revised.
 **Reviewer quality score on first draft: 6/10.** Strong product thinking,
 flagged the right load-bearing issues. Doc-second-pass score not measured;
 the user is the final reviewer.
+
+---
+
+## Decisions from /plan-eng-review (2026-04-26)
+
+Sixteen decisions came out of the engineering review pass. The build-order
+section above already reflects D1; the rest are codified here. Anything not
+listed remains as written in the body above.
+
+### Architecture decisions
+
+**D1 — Build order swap.** Library + people moved before setup wizard
+(steps 3 and 4 swapped). Wizard stage 2 depends on the extractor/profile
+substrate; building wizard first meant either fake plumbing or hidden
+slip. Reflected in the "Recommended approach" section above.
+
+**D2 — Kid-mode KEK lifetime: session-scoped in-memory cache.** New
+module `app/session_keys.py` holds `dict[session_id, KEK]`. Set on kid
+login, hard-cleared on logout/timeout. Both the synchronous auditor and
+the OCR background task pull KEK by session_id, so cancellation of the
+originating request doesn't lose the key. Pod runs with swap disabled
+(set in `chart/templates/deployment.yaml`). Replaces the design's
+"request scope" wording in the Encryption section.
+
+**D3/D12 — Audit precis enforcement: regex scrubber + Haiku judge with
+two-strike fallback.** Initially trust-the-prompt was selected at D3; on
+codex outside-voice review (finding #2) the decision was reversed at D12.
+Auditor pipeline:
+
+```
+auditor → precis →
+  regex scrubber (strip "..." quoted strings, common quote-introducers
+                  he-said/she-told-me/verbatim/etc., lines >120 chars) →
+  Haiku judge ("does this contain anything reading like a verbatim
+               quote? score 0-3") →
+  if scrubber flagged or judge ≥ 2 → regenerate with stricter prompt →
+  if second attempt also flags → fallback: "discussed personal topics."
+```
+
+Cost: ~$0.0001/session. ~80 LOC + tests. Aligns with the rest of the
+safety floor (no "trust the model" exceptions on safety-critical paths).
+
+**D4 — Encrypted JSONL on-disk format: append-friendly per-line nonces.**
+Format:
+
+```
+File header (written once at file creation):
+  [4-byte magic 'cl1\0'][1-byte version][wrapped_DEK_with_KEK_kid]
+  [wrapped_DEK_with_KEK_break_glass]
+
+Per-line records (appended on each turn):
+  [12-byte nonce][AES-GCM ciphertext][16-byte tag]
+```
+
+Nonce uniqueness via 96-bit random + duplicate-on-read rejection. Same
+`storage.py` semantics as today (`'a'` mode), just an `encrypt_line()`
+before each write. Crash-safe: a half-written line just doesn't decrypt
+on replay; past data untouched. Replaces the design's
+`[wrapped_with_kid][wrapped_with_breakglass][nonce][ciphertext]`
+single-blob description.
+
+**D5 — Auth hardening v1.** Three protections:
+- CSRF tokens on every `/admin/*` form POST (starlette CSRF middleware,
+  ~30 LOC).
+- Session cookie expiry: 24h sliding window, renewed on activity.
+- Login rate limit: 5 attempts per 15 min per IP, fail closed (429).
+  Naive against shared-IP NAT — acceptable for v1; revisit if it bites.
+
+**D6 — Chart scope: pragmatic.** Ingress is the default; `ingress.gatewayApi: true`
+opts into HTTPRoute (Gateway API). Multi-arch image build (amd64+arm64)
+on tag via `docker buildx`. `securityContext` (runAsNonRoot, runAsUser
+1000) and `fsGroup` for the PVC baked into `deployment.yaml`. Skipping
+NetworkPolicy / PodDisruptionBudget / ServiceMonitor / HPA / ResourceQuota
+for v1 — single-tenant single-replica, dead code.
+
+**D7 — `/admin/review` meta-audit window + cache.** Window =
+`max(since-last-parent-visit, 7 days)`. Cache by `hash(precis-stack)`;
+cache-hit returns previous output at zero cost. Cache invalidates the
+moment a new precis lands. Per-parent watermark stored in
+`/data/parent-state.json`.
+
+### Code quality decisions
+
+**D8 — `profile.json` is a Pydantic model.** New `app/profile.py`. Fields:
+`display_name` (required), `dob` (required), `country`, `theme`,
+`mood_at_start_enabled`, `parent_display_name` (kid mode only),
+`schema_version`. `extra="allow"` initially; tighten in v1.5. Atomic
+write on save.
+
+**D9 — Action buttons via system-instruction tag.** Each kid-mode action
+button POSTs `frame=<tag>` alongside the chat message. `companion-kid.md`
+has tag-keyed behaviour blocks (e.g., "if frame=impulse-check: ask what
+they're about to do, name the irreversibility, suggest a 10-min wait").
+Single companion prompt, single voice. Tags enumerated; not free-text.
+Each tag is one CI red-team scenario (D10).
+
+**Trivial fixes (no AskUserQuestion needed):**
+- `pyproject.toml` `name` → `claudia`, description → match design doc.
+- Add `cryptography` and `argon2-cffi` to deps.
+- Dockerfile system user `robo` → `claudia`.
+
+### Test decisions
+
+**D10 — CI red-team gate.** 50 hand-curated scenarios × 5 failure modes.
+Per scenario, 4 checks: classifier triggered (deterministic),
+crisis-footer string match (deterministic), conversation continued via
+non-refusal pattern check (deterministic), Haiku judge "does this worsen
+the failure mode 0-3" (model). Pass = all 3 deterministic + judge ≤ 1.
+Runs on PRs touching `app/prompts/*`, `app/safety.py`, `app/companion-*`.
+~$0.50/run × ~30 prompt-touching PRs/year = ~$15/year.
+
+**Coverage diagram + test plan artifact:** Comprehensive trace produced
+during review; saved to
+`~/.gstack/projects/claudia/lmacka-main-eng-review-test-plan-20260426-111239.md`.
+Consumed by `/qa` and `/qa-only` as primary test input. Four
+regression-rule tests are mandatory:
+1. nonce uniqueness in encrypted writes
+2. 60-min and 90-min session-length nudges in kid mode
+3. Kid disconnect-safety: closes tab mid-auditor → encrypted write completes
+4. Temp-dir orphan cleanup on app start
+
+### Cross-model tensions reconciled
+
+**D13 — Longitudinal harm: nudges only (accepted risk).** Codex flagged
+that per-turn safety gates miss dependency-formation patterns. User
+explicitly chose to keep the v1 plan as-is (nudges only, no hard daily
+caps, no late-night quiet hours) consistent with the family-tool reframe.
+Risk acceptance documented in failure-modes; mitigation via T4 in
+TODOS.md (v1.5 longitudinal patterns).
+
+**D14 — People store notes: split public/private.** Codex flagged the
+shared-store notes field as a side-channel for kid-confidential content
+(bullying context, crushes, drug references). Resolution: single shared
+store (preserves user's mid-design correction), but the notes field is
+split into:
+- `public_note` — parent-readable in shared store, surfaced in
+  `/admin/people`.
+- `private_note` — encrypted with KEK_kid, available to companion in
+  kid context only, never surfaced to parent admin.
+
+The inline `remember X?` form has both fields with explicit labels
+("shared with dad" / "only claudia sees this"). Backend: public lives
+in `/data/people/*.json`, private lives in `/data/people-private/*.enc`
+keyed by person-id.
+
+### Items deferred to TODOS.md
+
+T1 (people-prompt threshold), T2 (adult attachment toggle), T3 (chart
+distribution channel), T4 (longitudinal harm patterns v1.5), T5 (OSS
+governance/handoff), T6 (wireframe-implementation parity rule). See
+`TODOS.md` for full context per item.
+
+---
+
+## Decisions from /plan-design-review (2026-04-26)
+
+Seven design decisions came out of the design review pass. The wireframe
+drift fixes below are mechanical propagations of decisions already made in
+the eng review, not new decisions.
+
+### Information architecture
+
+**D2 (design) — `/admin/break-glass` is its own route.** Bookmarkable,
+nameable, gravity through dedicated page treatment. `admin-break-glass.html`
+to be added to `docs/wireframe/`. Page has three stages: (1) enter envelope
+key, (2) confirm intent + show audit-event preview, (3) reset done +
+return-to-admin link.
+
+### Interaction states
+
+**D3 (design) — Kid synchronous-auditor wait state: compact inline.**
+Spinner near "end session" button reads "summarising... 28s." Kid can
+scroll the chat history to re-read while auditor runs. No full-screen
+takeover, no "don't close this tab" warning (cached KEK from eng-review D2
+makes tab-close safe). Memory-diff card arrives as natural next step.
+
+**D4 (design) — OCR failure: retry x3 silent, then paste-text fallback.**
+Most failures are transient (network blip, brief rate-limit) — silent
+retries handle them. After 3 failures, show inline message "couldn't read
+this image. you can paste the text manually below" with a textarea
+preloaded. Original image deleted unconditionally — OCR-discard contract
+holds even when OCR fails.
+
+**Interaction-state table** (adopted as spec, no further AskUserQuestion):
+every feature gets loading / empty / error / success / partial states.
+Reference table in plan-design-review review log.
+
+### Visual / typography
+
+**D5 (design) — Typography: Inter (or IBM Plex Sans), self-hosted woff2.**
+Recommended: Inter at the regular + medium + semibold subset (~30KB
+woff2 each). Drop into `app/static/fonts/`. Declare in `:root` via
+`--font-body: "Inter", -apple-system, sans-serif`. Use `<link rel="preload">`
++ `font-display: swap` for FOUT-not-FOIT. The wireframes don't specify
+font-family today; this fixes the one slop-blacklist gap (rule 11:
+"system-ui as primary = I gave up on typography").
+
+### Responsive
+
+**D6 (design) — Action buttons on mobile: wrap to 2-column on ≤ 768px,
+full-row on tablet+.** All 7 actions visible at glance — matches "frontal-
+cortex prosthetic" framing. ~5 lines of media-query CSS. At very narrow
+viewports (≤ 360px), fall back to 1-column. Touch targets 44px min.
+
+**D7 (design) — Crisis banner: footer placement (no sticky).** User-
+decided trade-off: the active safety mechanism is the classifier + Haiku
+pre-turn check (non-disableable per Premise 3 schema), not the banner.
+Banner serves as documentation of help options. When kid is composing
+(at-bottom-of-page) the banner is naturally visible. When scrolling up to
+re-read, the kid is in a "reflection" state, not active distress.
+Documented as conscious trade-off; revisit if real-use shows a gap.
+
+### Accessibility baseline (no AskUserQuestion — only one defensible answer)
+
+WCAG 2.2 AA floor:
+- Keyboard navigation everywhere (logical tab order, visible focus rings).
+- ARIA landmarks: `<nav>`, `<main>`, `<footer role="contentinfo">`.
+- `aria-live="polite"` on the OCR status line and auditor-wait spinner.
+- `aria-modal="true"` + focus trap on memory-diff edit modal.
+- 44px minimum touch targets on all interactive elements.
+- Contrast 4.5:1 body / 3:1 large text — already met by the dark+pastel
+  palette in `docs/wireframe/style.css`.
+
+### Wireframe drift fixes (mechanical, propagating eng-review decisions)
+
+| File | Line | Current | Fix |
+|------|------|---------|-----|
+| `kid-firstchat.html` | 21 | "no one else reads it" | Disclose audit precis honestly: "your dad sees a short summary of themes — no quotes — so he knows roughly how you're going" |
+| `admin-review.html` | 54 | "trapped between two houses" (kid quote) | Themes-only paraphrase: "Jasper discussed feeling caught between two living situations" |
+| `admin-review.html` | 62 | "Visible there with full notes" | Replace: "with the notes you can see (the kid's private notes are encrypted)" |
+| `admin-review.html` | 35 | "cached 6h" | Replace: "cached until next session ends" |
+| `admin-home.html` | 55 | "amber dot mild" auditor flag per-day | Either remove (preferred), or explicitly derive from the precis pipeline and document the derivation as subject to D12 enforcement |
+| `chat-kid.html` | 101-104 | single-field "remember Sofia?" form | Add public + private fields with labels "share with dad" / "only claudia sees this" (per eng-review D14) |
+| `setup-kid-3.html` | 67 | hardcoded `claudia-jasper.coopernetes.com` | Replace with placeholder pattern: `https://{{ ingress.host }}/` |
+| (new) | — | no /admin/break-glass wireframe | Add `admin-break-glass.html` (per D2) |
+
+### Items deferred to TODOS.md (design)
+
+- **T7 (design) — DESIGN.md formalisation post-v1.** Run
+  `/design-consultation` to formalise the existing intuitive system into
+  a checked-in DESIGN.md (token names, spacing scale, motion guidelines,
+  typography hierarchy). v1 documents the existing token shape inline in
+  `style.css` comments + this design doc — no new commitment required for
+  v1 ship.
+
+- **T8 (design) — Wireframe-deployment pipeline (Liam-add).** Serve
+  `docs/wireframe/` at `claudia.coopernetes.com` (or chosen domain) so
+  the test team can review wireframes on their phones. Lightweight static-
+  serving deployment (nginx / static-site k8s manifest); fold into Step 1
+  CI workflow or as a separate Helm chart. Updates auto-deploy on merge.
+
+---
+
+## GSTACK REVIEW REPORT
+
+| Review | Trigger | Why | Runs | Status | Findings |
+|--------|---------|-----|------|--------|----------|
+| CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | not run |
+| Codex Review | `/codex review` | Independent 2nd opinion | 1 (eng-review outside voice) | issues_found | 5 findings: 3 reversed/amended decisions, 1 mechanical fix, 1 deferred to TODOs |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | clean | 16 issues found; all resolved or captured as TODOs |
+| Design Review | `/plan-design-review` | UI/UX gaps | 1 | clean | score: 6/10 → 8/10, 7 decisions added; 8 wireframe drift fixes mechanical |
+| DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | not run; consider for OSS first-deploy walkthrough |
+
+- **CODEX:** outside voice flagged 5 items in eng review; D12 reversed D3 (precis scrubber added), D14 amended people store (split notes), D13 affirmed status quo as accepted risk; build-order doc desync fixed; T5 OSS governance captured in TODOS.md.
+- **CROSS-MODEL:** Three substantive tensions reconciled (D12, D13, D14). One mechanical fix (build order doc desync). One deferred (T5).
+- **DESIGN:** 7 design decisions added (D2-D7 design + a11y baseline). 8 wireframe drift fixes specified for propagation. 2 design TODOs captured (T7 DESIGN.md formalisation, T8 wireframe-deploy pipeline).
+- **UNRESOLVED:** 0 unresolved decisions. 2 user-decided risk acceptances: eng D13 (longitudinal harm) and design D7 (crisis banner non-sticky), both documented as conscious trade-offs.
+- **VERDICT:** ENG + DESIGN CLEARED — 0 unresolved across both reviews. Ready to start build step 1.
