@@ -25,6 +25,25 @@
 {% endif %}
 
 {% if header.status == "active" %}
+{% if claudia_mode == "kid" %}
+<div class="action-row" aria-label="Action buttons — pick one to start, or just type below">
+  {% set action_buttons = [
+    ("impulse-check", "am I about to make this worse?"),
+    ("tone-help", "help me reply without sounding cooked"),
+    ("translate-adult", "explain what this adult means"),
+    ("impulse-stop", "I want to do something dumb"),
+    ("plan-20", "make a plan for the next 20 min"),
+    ("name-feeling", "turn this feeling into words"),
+    ("just-talk", "just want to talk"),
+  ] %}
+  {% for tag, label in action_buttons %}
+    <button type="button"
+            title="frame: {{ tag }}"
+            onclick="claudiaActionButton({{ tag | tojson }}, {{ label | tojson }})">{{ label }}</button>
+  {% endfor %}
+</div>
+{% endif %}
+
 <form id="msg-form"
       hx-post="/session/{{ header.session_id }}/message"
       hx-target="#messages"
@@ -35,7 +54,9 @@
       class="compose">
   <textarea name="content" id="content" rows="3" placeholder="…" autofocus required
             onpaste="claudiaHandlePaste(event, '{{ header.session_id }}')"></textarea>
+  <input type="hidden" name="frame" value="">
   <div class="compose-actions">
+    {% if claudia_mode != "kid" %}
     <label class="file-upload-btn secondary outline" title="Upload PDF or image">
       <input type="file" id="uploader" accept=".pdf,.png,.jpg,.jpeg,.txt,.md,.eml" style="display:none"
              onchange="claudiaUpload(this)">
@@ -44,6 +65,7 @@
     <button type="button" class="secondary outline" onclick="claudiaPasteChat('{{ header.session_id }}')">
       Paste chat
     </button>
+    {% endif %}
     <button type="submit" class="primary">Send</button>
     <small class="muted htmx-indicator">thinking…</small>
   </div>
@@ -81,6 +103,21 @@
 
   // Initial scroll on page load.
   document.addEventListener('DOMContentLoaded', claudiaScrollBottom);
+
+  // Kid action buttons: populate the textarea + frame hidden field, then submit.
+  function claudiaActionButton(tag, label) {
+    const form = document.getElementById('msg-form');
+    if (!form) return;
+    const ta = document.getElementById('content');
+    const frameInput = form.querySelector('input[name="frame"]');
+    if (ta) ta.value = label;
+    if (frameInput) frameInput.value = tag;
+    if (form.requestSubmit) {
+      form.requestSubmit();
+    } else {
+      form.submit();
+    }
+  }
 
   // After the polling fragment swaps (opener arrives, etc.), scroll too.
   document.body.addEventListener('htmx:afterSwap', function(evt) {

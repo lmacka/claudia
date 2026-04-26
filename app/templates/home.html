@@ -3,9 +3,18 @@
 {% block content %}
 <header class="home-header">
   <h1>claudia</h1>
+  {% if claudia_mode == "kid" %}
+    <div class="home-meta">
+      <a href="/logout" class="muted"><small>log out</small></a>
+    </div>
+  {% endif %}
 </header>
 
-{% if mood_sparkline %}
+{% if claudia_mode == "kid" %}
+  <p class="muted">Hi {{ display_name or "there" }}. What's going on?</p>
+{% endif %}
+
+{% if mood_sparkline and claudia_mode != "kid" %}
   <aside class="mood-strip">
     <span class="bridge-mood" title="regulation trend, last 20 sessions">mood: {{ mood_sparkline }}</span>
   </aside>
@@ -13,7 +22,7 @@
 
 {% if active %}
   <article class="resume-banner">
-    <strong>Unfinished session from {{ active.label }}</strong>
+    <strong>Unfinished {{ "chat" if claudia_mode == "kid" else "session" }} from {{ active.label }}</strong>
     <div class="row">
       <a href="/session/{{ active.session_id }}" role="button">Resume</a>
       <form method="post" action="/session/{{ active.session_id }}/end" class="inline">
@@ -22,34 +31,34 @@
     </div>
   </article>
 {% else %}
-  <a href="/session/new" role="button" class="primary-cta">New session</a>
+  <a href="/session/new" role="button" class="primary-cta">{{ "Start a chat" if claudia_mode == "kid" else "New session" }}</a>
 {% endif %}
 
+{% if sessions %}
 <section>
-  <h2>Past sessions</h2>
-  {% if not sessions %}
-    <p class="muted">No sessions yet. Start one above.</p>
-  {% else %}
-    <ul class="session-list">
-      {% for s in sessions %}
-        <li>
-          <a href="/session/{{ s.session_id }}">
-            <div class="session-list-main">
-              <strong>{{ s.label }}</strong>
-            </div>
-            {% if s.mood is not none %}
-              <span class="session-mood" title="mood at session end">{{ s.mood }}/10</span>
-            {% endif %}
-          </a>
-        </li>
-      {% endfor %}
-    </ul>
-  {% endif %}
+  <h2>{{ "Past chats" if claudia_mode == "kid" else "Past sessions" }}</h2>
+  <ul class="session-list">
+    {% for s in sessions %}
+      <li>
+        <a href="/session/{{ s.session_id }}">
+          <div class="session-list-main">
+            <strong>{{ s.label }}</strong>
+          </div>
+          {% if s.mood is not none %}
+            <span class="session-mood" title="mood at session end">{{ s.mood }}/10</span>
+          {% endif %}
+        </a>
+      </li>
+    {% endfor %}
+  </ul>
 </section>
+{% endif %}
 
+{% if claudia_mode != "kid" %}
 <section class="report-link">
   <h2>Therapist handover</h2>
   <p class="muted"><small>Generate a one-page note covering recent sessions to take to your real therapist.</small></p>
   <a href="/report" role="button" class="secondary outline">Generate report</a>
 </section>
+{% endif %}
 {% endblock %}
