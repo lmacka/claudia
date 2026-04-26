@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block title %}claudia — people{% endblock %}
+{% block content %}
+
+<header class="home-header">
+  <h1>people</h1>
+  <div class="home-meta">
+    <a href="/" class="muted"><small>← home</small></a>
+  </div>
+</header>
+
+<p class="muted">People claudia knows about. Co-parents, family, professionals, friends.</p>
+
+<section class="people-add" style="margin-bottom: var(--r-space-6);">
+  <details>
+    <summary><strong>Add a person</strong></summary>
+    <form method="post" action="/people/new">
+      <fieldset>
+        <label for="person-name">Name</label>
+        <input type="text" id="person-name" name="name" required>
+
+        <label for="person-aliases">Aliases (comma-separated, optional)</label>
+        <input type="text" id="person-aliases" name="aliases" placeholder="e.g. Rhi, Bri">
+
+        <label for="person-category">Category</label>
+        <select id="person-category" name="category">
+          {% for c in categories %}
+            <option value="{{ c }}"{% if c == "other" %} selected{% endif %}>{{ c }}</option>
+          {% endfor %}
+        </select>
+
+        <label for="person-relationship">Relationship (one line)</label>
+        <input type="text" id="person-relationship" name="relationship" placeholder="e.g. Ex-partner, mother of Jasper">
+
+        <label for="person-summary">Summary (one paragraph)</label>
+        <textarea id="person-summary" name="summary" rows="2"></textarea>
+
+        <label for="person-important">Important context (one bullet per line)</label>
+        <textarea id="person-important" name="important_context" rows="3"></textarea>
+
+        <label for="person-tags">Tags (comma-separated)</label>
+        <input type="text" id="person-tags" name="tags">
+
+        <label for="person-notes">Notes (free-form markdown, optional)</label>
+        <textarea id="person-notes" name="notes" rows="4"></textarea>
+
+        <button type="submit">Add</button>
+      </fieldset>
+    </form>
+  </details>
+</section>
+
+<section>
+  <h2>Active people <small class="muted">({{ active|length }})</small></h2>
+  {% if not active %}
+    <p class="muted"><em>no people yet — add above.</em></p>
+  {% else %}
+    <table class="people-table">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Category</th>
+          <th>Relationship</th>
+          <th>Last mentioned</th>
+          <th>Docs</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for person in active %}
+          {% include "fragments/person_row.html" %}
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+</section>
+
+{% if archived %}
+<section style="margin-top: var(--r-space-6);">
+  <details>
+    <summary><strong>Archived</strong> <small class="muted">({{ archived|length }})</small></summary>
+    <table class="people-table" style="margin-top: var(--r-space-3);">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Category</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for person in archived %}
+          <tr id="{{ person.id }}">
+            <td>{{ person.name }}</td>
+            <td>{{ person.category }}</td>
+            <td>
+              <form method="post" action="/people/{{ person.id }}/restore" class="inline">
+                <button type="submit" class="outline">Restore</button>
+              </form>
+              <form method="post" action="/people/{{ person.id }}/delete" class="inline"
+                    hx-post="/people/{{ person.id }}/delete"
+                    hx-confirm="Permanently delete '{{ person.name }}'? This cannot be undone."
+                    hx-target="closest tr" hx-swap="outerHTML">
+                <button type="submit" class="outline contrast">Delete</button>
+              </form>
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </details>
+</section>
+{% endif %}
+
+{% endblock %}

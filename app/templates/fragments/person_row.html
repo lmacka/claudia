@@ -1,0 +1,32 @@
+{# Single row of the active people table.
+   Expects: person (a PersonMeta dict-like). #}
+<tr id="{{ person.id }}">
+  <td>
+    <details>
+      <summary>
+        <strong>{{ person.name }}</strong>
+        {% if person.aliases %}<small class="muted">({{ person.aliases | join(", ") }})</small>{% endif %}
+      </summary>
+      <div hx-get="/people/{{ person.id }}" hx-trigger="toggle once from:closest details" hx-target="this" hx-swap="innerHTML">
+        <small class="muted"><em>loading…</em></small>
+      </div>
+    </details>
+  </td>
+  <td><small>{{ person.category }}</small></td>
+  <td><small>{{ person.relationship or "—" }}</small></td>
+  <td>
+    <small class="muted">
+      {% if person.last_mentioned %}{{ person.last_mentioned.strftime("%Y-%m-%d") if person.last_mentioned.strftime else person.last_mentioned }}
+      {% else %}—{% endif %}
+    </small>
+  </td>
+  <td><small>{{ person.linked_documents | length }}</small></td>
+  <td>
+    <form method="post" action="/people/{{ person.id }}/archive" class="inline"
+          hx-post="/people/{{ person.id }}/archive"
+          hx-confirm="Archive '{{ person.name }}'?"
+          hx-target="closest tr" hx-swap="outerHTML">
+      <button type="submit" class="outline" style="font-size: 0.8em;">Archive</button>
+    </form>
+  </td>
+</tr>

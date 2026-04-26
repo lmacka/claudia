@@ -1,0 +1,69 @@
+{# Expand-to-edit detail for one person. Expects: meta, notes, categories. #}
+<div class="person-detail">
+
+  <form method="post" action="/people/{{ meta.id }}">
+    <fieldset>
+      <label><small>Name</small></label>
+      <input type="text" name="name" value="{{ meta.name }}" required>
+
+      <label><small>Aliases (comma-separated)</small></label>
+      <input type="text" name="aliases" value="{{ meta.aliases | join(', ') }}">
+
+      <label><small>Category</small></label>
+      <select name="category">
+        {% for c in categories %}
+          <option value="{{ c }}"{% if c == meta.category %} selected{% endif %}>{{ c }}</option>
+        {% endfor %}
+      </select>
+
+      <label><small>Relationship (one line)</small></label>
+      <input type="text" name="relationship" value="{{ meta.relationship }}">
+
+      <label><small>Summary</small></label>
+      <textarea name="summary" rows="2">{{ meta.summary }}</textarea>
+
+      <label><small>Important context (one per line)</small></label>
+      <textarea name="important_context" rows="3">{{ meta.important_context | join('\n') }}</textarea>
+
+      <label><small>Tags (comma-separated)</small></label>
+      <input type="text" name="tags" value="{{ meta.tags | join(', ') }}">
+
+      <button type="submit" class="outline" style="font-size: 0.85em;">Save meta</button>
+    </fieldset>
+  </form>
+
+  <form method="post" action="/people/{{ meta.id }}/notes" style="margin-top: var(--r-space-3);">
+    <label><small><strong>Notes (markdown, free-form)</strong></small></label>
+    <textarea name="notes" rows="6">{{ notes }}</textarea>
+    <button type="submit" class="outline" style="font-size: 0.85em;">Save notes</button>
+  </form>
+
+  {% if meta.linked_documents %}
+    <p style="margin-top: var(--r-space-3);"><small><strong>Linked documents:</strong></small></p>
+    <ul>
+      {% for doc_id in meta.linked_documents %}
+        <li>
+          <small><code>{{ doc_id }}</code></small>
+          <form method="post" action="/people/{{ meta.id }}/unlink" class="inline">
+            <input type="hidden" name="doc_id" value="{{ doc_id }}">
+            <button type="submit" class="outline" style="font-size: 0.75em;">unlink</button>
+          </form>
+        </li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+
+  <form method="post" action="/people/{{ meta.id }}/link" style="margin-top: var(--r-space-3);">
+    <label><small>Link a document</small></label>
+    <input type="text" name="doc_id" placeholder="2026-04-25T12-30-45Z_dc-diagnostic" style="font-size: 0.85em;">
+    <button type="submit" class="outline" style="font-size: 0.85em;">Link</button>
+  </form>
+
+  <p style="margin-top: var(--r-space-3); color: var(--pico-muted-color);">
+    <small>
+      <code>{{ meta.id }}</code>
+      · created {{ meta.created_at.strftime("%Y-%m-%d") if meta.created_at.strftime else meta.created_at }}
+      · updated {{ meta.updated_at.strftime("%Y-%m-%d") if meta.updated_at.strftime else meta.updated_at }}
+    </small>
+  </p>
+</div>

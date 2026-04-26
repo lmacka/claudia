@@ -53,6 +53,7 @@ from app.claude import SONNET, ClaudeClient, Usage
 from app.extractors import build_registry, make_vision_callables
 from app.library import Library
 from app.library_stream import StatusBus
+from app.people import People, PersonCategory
 from app.context import TZ as BRISBANE_TZ
 from app.context import ContextLoader
 from app.google_auth import GoogleAuthConfig
@@ -117,6 +118,7 @@ class AppState:
     library: Library
     extractor_registry: Any
     status_bus: StatusBus
+    people: People
 
 
 state = AppState()
@@ -188,6 +190,7 @@ async def lifespan(app: FastAPI):
     state.extractor_registry = build_registry(transcribe=transcribe, spot_check=spot_check)
     state.status_bus = StatusBus()
     state.status_bus.attach_loop(asyncio.get_running_loop())
+    state.people = People(cfg.data_root / "people")
 
     try:
         rebuild_index(cfg.data_root)
@@ -1874,6 +1877,199 @@ async def library_doc_set_date(
             raise HTTPException(400, f"date must be ISO YYYY-MM-DD, got {value!r}")
         state.library.update_meta(doc_id, original_date=d, original_date_source="user_supplied")
     return RedirectResponse(url=f"/library#{doc_id}", status_code=303)
+
+
+# ---------------------------------------------------------------------------
+# /people/* — sibling people store (commit F of Step 3)
+# ---------------------------------------------------------------------------
+
+
+_VALID_CATEGORIES: tuple[str, ...] = (
+    "co-parent",
+    "family",
+    "partner",
+    "friend",
+    "professional",
+    "child",
+    "colleague",
+    "other",
+)
+
+
+def _split_csv(value: str | None) -> list[str]:
+    return [x.strip() for x in (value or "").split(",") if x.strip()]
+
+
+def _split_lines(value: str | None) -> list[str]:
+    return [x.strip() for x in (value or "").splitlines() if x.strip()]
+
+
+@app.get("/people", response_class=HTMLResponse)
+async def people_index(
+    request: Request, _: str = Depends(require_library_access)
+) -> HTMLResponse:
+    active = state.people.list_active()
+    archived = state.people.list_archived()
+    return state.templates.TemplateResponse(
+        request,
+        "people.html",
+        {
+            "active": active,
+            "archived": archived,
+            "categories": _VALID_CATEGORIES,
+        },
+    )
+
+
+@app.post("/people/new")
+async def people_new(
+    request: Request, _: str = Depends(require_library_access)
+) -> Response:
+    form = await request.form()
+    name = (form.get("name") or "").strip()
+    if not name:
+        raise HTTPException(400, "name is required")
+    category = (form.get("category") or "other").strip()
+    if category not in _VALID_CATEGORIES:
+        raise HTTPException(400, f"invalid category {category!r}")
+    person_id = state.people.add(
+        name=name,
+        category=category,  # type: ignore[arg-type]
+        relationship=(form.get("relationship") or "").strip(),
+        summary=(form.get("summary") or "").strip(),
+        important_context=_split_lines(form.get("important_context")),
+        tags=_split_csv(form.get("tags")),
+        aliases=_split_csv(form.get("aliases")),
+        notes=(form.get("notes") or "").strip(),
+    )
+    return RedirectResponse(url=f"/people#{person_id}", status_code=303)
+
+
+@app.get("/people/{person_id}", response_class=HTMLResponse)
+async def people_detail(
+    person_id: str, request: Request, _: str = Depends(require_library_access)
+) -> HTMLResponse:
+    meta = state.people.get(person_id)
+    if meta is None:
+        raise HTTPException(404, f"person {person_id} not found")
+    notes = state.people.get_notes(person_id) or ""
+    return state.templates.TemplateResponse(
+        request,
+        "fragments/person_detail.html",
+        {"meta": meta, "notes": notes, "categories": _VALID_CATEGORIES},
+    )
+
+
+@app.post("/people/{person_id}")
+async def people_update(
+    person_id: str, request: Request, _: str = Depends(require_library_access)
+) -> Response:
+    form = await request.form()
+    fields: dict[str, Any] = {}
+    if "name" in form:
+        name = (form.get("name") or "").strip()
+        if not name:
+            raise HTTPException(400, "name cannot be empty")
+        fields["name"] = name
+    if "aliases" in form:
+        fields["aliases"] = _split_csv(form.get("aliases"))
+    if "category" in form:
+        category = (form.get("category") or "").strip()
+        if category not in _VALID_CATEGORIES:
+            raise HTTPException(400, f"invalid category {category!r}")
+        fields["category"] = category
+    if "relationship" in form:
+        fields["relationship"] = (form.get("relationship") or "").strip()
+    if "summary" in form:
+        fields["summary"] = (form.get("summary") or "").strip()
+    if "important_context" in form:
+        fields["important_context"] = _split_lines(form.get("important_context"))
+    if "tags" in form:
+        fields["tags"] = _split_csv(form.get("tags"))
+
+    try:
+        state.people.update(person_id, **fields)
+    except KeyError:
+        raise HTTPException(404, f"person {person_id} not found")
+    return RedirectResponse(url=f"/people#{person_id}", status_code=303)
+
+
+@app.post("/people/{person_id}/notes")
+async def people_replace_notes(
+    person_id: str, request: Request, _: str = Depends(require_library_access)
+) -> Response:
+    form = await request.form()
+    content = form.get("notes", "")
+    try:
+        state.people.replace_notes(person_id, content)
+    except KeyError:
+        raise HTTPException(404, f"person {person_id} not found")
+    return RedirectResponse(url=f"/people#{person_id}", status_code=303)
+
+
+@app.post("/people/{person_id}/link")
+async def people_link_doc(
+    person_id: str, request: Request, _: str = Depends(require_library_access)
+) -> Response:
+    form = await request.form()
+    doc_id = (form.get("doc_id") or "").strip()
+    if not doc_id:
+        raise HTTPException(400, "doc_id required")
+    if state.library.get(doc_id) is None:
+        raise HTTPException(404, f"doc {doc_id} not found")
+    try:
+        state.people.link_doc(person_id, doc_id)
+    except KeyError:
+        raise HTTPException(404, f"person {person_id} not found")
+    return RedirectResponse(url=f"/people#{person_id}", status_code=303)
+
+
+@app.post("/people/{person_id}/unlink")
+async def people_unlink_doc(
+    person_id: str, request: Request, _: str = Depends(require_library_access)
+) -> Response:
+    form = await request.form()
+    doc_id = (form.get("doc_id") or "").strip()
+    try:
+        state.people.unlink_doc(person_id, doc_id)
+    except KeyError:
+        raise HTTPException(404, f"person {person_id} not found")
+    return RedirectResponse(url=f"/people#{person_id}", status_code=303)
+
+
+@app.post("/people/{person_id}/archive")
+async def people_archive(
+    person_id: str, _: str = Depends(require_library_access)
+) -> Response:
+    try:
+        state.people.archive(person_id)
+    except KeyError:
+        raise HTTPException(404, f"person {person_id} not found")
+    return Response(status_code=204)
+
+
+@app.post("/people/{person_id}/restore")
+async def people_restore(
+    person_id: str, _: str = Depends(require_library_access)
+) -> Response:
+    try:
+        state.people.restore(person_id)
+    except KeyError:
+        raise HTTPException(404, f"person {person_id} not found")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return RedirectResponse(url=f"/people#{person_id}", status_code=303)
+
+
+@app.post("/people/{person_id}/delete")
+async def people_delete(
+    person_id: str, _: str = Depends(require_library_access)
+) -> Response:
+    try:
+        state.people.delete(person_id)
+    except KeyError:
+        raise HTTPException(404, f"person {person_id} not found")
+    return Response(status_code=204)
 
 
 # ---------------------------------------------------------------------------
