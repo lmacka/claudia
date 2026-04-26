@@ -41,6 +41,7 @@ class ContextLoader:
         mode: str = "adult",
         display_name: str = "",
         kid_parent_display_name: str = "your parents",
+        people_md_provider=None,
     ) -> None:
         self.data_root = data_root
         self.prompts_dir = prompts_dir
@@ -48,6 +49,9 @@ class ContextLoader:
         self.mode = mode
         self.display_name = display_name
         self.kid_parent_display_name = kid_parent_display_name
+        # Callable[[], str] returning the rendered people roster, or None.
+        # Concatenated under INDEX.md in block 2 when present.
+        self._people_md_provider = people_md_provider
 
     def _read(self, path: Path) -> str:
         try:
@@ -187,13 +191,21 @@ class ContextLoader:
 
         block1 = "\n\n---\n\n".join(stable_parts)
 
-        # Block 2 — rotated
+        # Block 2 — rotated. INDEX.md + people.md (when a provider is wired).
         index = self._read(self.context_dir / "INDEX.md").strip()
-        block2 = (
+        block2_parts = [
             f"# INDEX.md\n\n{index}"
             if index
             else "# INDEX.md\n\n(empty — no source-material or uploads yet)"
-        )
+        ]
+        if self._people_md_provider is not None:
+            try:
+                people_md = self._people_md_provider() or ""
+                if people_md.strip():
+                    block2_parts.append(people_md.strip())
+            except Exception as e:  # noqa: BLE001
+                log.warning("context.people_md_provider_failed", error=str(e))
+        block2 = "\n\n".join(block2_parts)
 
         # Block 3 — volatile
         current_state = self._read(self.context_dir / "05_current_state.md").strip()

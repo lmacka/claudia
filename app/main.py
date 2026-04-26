@@ -85,6 +85,11 @@ from app.tools.gmail import (
     save_gmail_attachment_spec,
     search_gmail_spec,
 )
+from app.tools.people import (
+    list_people_spec,
+    lookup_person_spec,
+    search_people_spec,
+)
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -138,6 +143,9 @@ def _build_tool_registry(cfg: config_module.Config, session_id: str | None = Non
     reg.register(READ_DOCUMENT_SPEC(cfg.data_root))
     reg.register(LIST_DOCUMENTS_SPEC(cfg.data_root))
     reg.register(SEARCH_DOCUMENTS_SPEC(cfg.data_root))
+    reg.register(list_people_spec(state.people))
+    reg.register(lookup_person_spec(state.people, state.library))
+    reg.register(search_people_spec(state.people))
 
     gcfg = _google_cfg(cfg)
     if gcfg.is_complete():
@@ -171,12 +179,15 @@ async def lifespan(app: FastAPI):
         (cfg.data_root / sub).mkdir(parents=True, exist_ok=True)
 
     state.store = InMemorySessionStore() if cfg.is_local else NFSSessionStore(cfg.data_root)
+    # ContextLoader's people_md_provider is wired below once state.people is
+    # constructed; until then it returns "".
     state.loader = ContextLoader(
         cfg.data_root,
         cfg.prompts_dir,
         mode=cfg.mode,
         display_name=cfg.display_name,
         kid_parent_display_name=cfg.kid_parent_display_name,
+        people_md_provider=lambda: state.people.render_people_md() if hasattr(state, "people") else "",
     )
     state.claude = None if cfg.is_local else ClaudeClient(api_key=cfg.anthropic_api_key)
     state.rate_limiter = auth_mod.IPRateLimiter()
@@ -1025,6 +1036,13 @@ def _run_audit_and_apply(session_id: str) -> None:
                 )
         except OSError as e:
             log.error("audit.app_feedback_failed", session_id=session_id, error=str(e))
+
+    if report.people_updates:
+        applied = summariser_mod.apply_people_updates(state.people, report.people_updates)
+        if applied:
+            state.store.append_event(
+                session_id, "people_updates_applied", {"count": len(applied), "items": applied}
+            )
 
     state.store.append_event(session_id, "audit_applied", {})
 

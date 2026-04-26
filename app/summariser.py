@@ -29,12 +29,29 @@ class AppFeedback:
 
 
 @dataclass
+class PeopleUpdate:
+    """One change to apply to /data/people/. add | update | touch."""
+
+    action: str  # "add" | "update" | "touch"
+    name: str = ""  # required for "add"
+    id: str = ""  # required for "update" / "touch"
+    category: str = ""
+    summary: str = ""
+    relationship: str = ""
+    aliases: list[str] = field(default_factory=list)
+    important_context: list[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)
+    append_note: str = ""
+
+
+@dataclass
 class AuditorReport:
     title: str
     summary_markdown: str
     current_state_proposed: str  # full replacement, "" if no change
     current_state_rationale: str
     app_feedback: list[AppFeedback]
+    people_updates: list[PeopleUpdate]
     usage: Usage
 
 
@@ -119,6 +136,44 @@ AUDIT_TOOL_SCHEMA: dict = {
                 "required": ["quote", "observation"],
             },
         },
+        "people_updates": {
+            "type": "array",
+            "description": (
+                "Updates to apply to the /people store after this session. "
+                "Use 'add' for a brand-new person mentioned for the first time, "
+                "'update' for changes/notes on an existing record (id required), "
+                "or 'touch' to bump last_mentioned without other changes. "
+                "Empty array if no people-related changes."
+            ),
+            "items": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["add", "update", "touch"]},
+                    "name": {"type": "string", "description": "Required for 'add'."},
+                    "id": {
+                        "type": "string",
+                        "description": "Existing person id, required for 'update' and 'touch'.",
+                    },
+                    "category": {
+                        "type": "string",
+                        "enum": [
+                            "co-parent", "family", "partner", "friend",
+                            "professional", "child", "colleague", "other",
+                        ],
+                    },
+                    "summary": {"type": "string"},
+                    "relationship": {"type": "string"},
+                    "aliases": {"type": "array", "items": {"type": "string"}},
+                    "important_context": {"type": "array", "items": {"type": "string"}},
+                    "tags": {"type": "array", "items": {"type": "string"}},
+                    "append_note": {
+                        "type": "string",
+                        "description": "Markdown paragraph to append to notes.md.",
+                    },
+                },
+                "required": ["action"],
+            },
+        },
     },
     "required": [
         "title",
@@ -126,6 +181,7 @@ AUDIT_TOOL_SCHEMA: dict = {
         "current_state_proposed",
         "current_state_rationale",
         "app_feedback",
+        "people_updates",
     ],
 }
 
@@ -190,14 +246,146 @@ def _normalise(data: dict, usage: Usage) -> AuditorReport:
             if q or obs:
                 feedback.append(AppFeedback(quote=q, observation=obs))
 
+    people_updates: list[PeopleUpdate] = []
+    raw_pu = data.get("people_updates") or []
+    if isinstance(raw_pu, list):
+        for item in raw_pu:
+            if not isinstance(item, dict):
+                continue
+            action = str(item.get("action", "")).strip()
+            if action not in ("add", "update", "touch"):
+                continue
+            people_updates.append(
+                PeopleUpdate(
+                    action=action,
+                    name=str(item.get("name", "")).strip(),
+                    id=str(item.get("id", "")).strip(),
+                    category=str(item.get("category", "")).strip(),
+                    summary=str(item.get("summary", "")).strip(),
+                    relationship=str(item.get("relationship", "")).strip(),
+                    aliases=[
+                        str(a).strip() for a in (item.get("aliases") or []) if str(a).strip()
+                    ],
+                    important_context=[
+                        str(c).strip() for c in (item.get("important_context") or []) if str(c).strip()
+                    ],
+                    tags=[
+                        str(t).strip() for t in (item.get("tags") or []) if str(t).strip()
+                    ],
+                    append_note=str(item.get("append_note", "")).strip(),
+                )
+            )
+
     return AuditorReport(
         title=title,
         summary_markdown=summary_markdown,
         current_state_proposed=current_state_proposed,
         current_state_rationale=current_state_rationale,
         app_feedback=feedback,
+        people_updates=people_updates,
         usage=usage,
     )
+
+
+def apply_people_updates(people, updates: list[PeopleUpdate]) -> list[dict]:
+    """
+    Apply auditor's people_updates to the People store. Near-name matches
+    on 'add' get merged into 'update' against the existing record (alias
+    appended) instead of duplicating.
+
+    Returns a structured list describing what was actually applied, suitable
+    for logging in the session-log.
+    """
+    applied: list[dict] = []
+    for u in updates:
+        try:
+            if u.action == "add":
+                if not u.name:
+                    log.warning("auditor.people_add_missing_name")
+                    continue
+                # Near-match: merge into existing record instead of duplicating.
+                near = people.find_near_match(u.name, max_distance=2)
+                if near is not None:
+                    fields: dict = {}
+                    if u.name not in [near.name] + near.aliases:
+                        fields["aliases"] = list({*near.aliases, u.name})
+                    if u.summary and not near.summary:
+                        fields["summary"] = u.summary
+                    if u.category and near.category == "other":
+                        fields["category"] = u.category
+                    if u.relationship and not near.relationship:
+                        fields["relationship"] = u.relationship
+                    if u.important_context:
+                        fields["important_context"] = list(
+                            {*near.important_context, *u.important_context}
+                        )
+                    if u.tags:
+                        fields["tags"] = list({*near.tags, *u.tags})
+                    if fields:
+                        people.update(near.id, **fields)
+                    if u.append_note:
+                        people.append_note(near.id, u.append_note)
+                    applied.append(
+                        {"action": "merged_into_existing", "id": near.id, "matched": u.name}
+                    )
+                else:
+                    new_id = people.add(
+                        name=u.name,
+                        category=(u.category or "other"),  # type: ignore[arg-type]
+                        relationship=u.relationship,
+                        summary=u.summary,
+                        important_context=u.important_context,
+                        tags=u.tags,
+                        aliases=u.aliases,
+                        notes=u.append_note,
+                    )
+                    applied.append({"action": "added", "id": new_id, "name": u.name})
+
+            elif u.action == "update":
+                if not u.id:
+                    log.warning("auditor.people_update_missing_id")
+                    continue
+                meta = people.get(u.id)
+                if meta is None:
+                    log.warning("auditor.people_update_unknown_id", id=u.id)
+                    continue
+                fields: dict = {}
+                if u.summary:
+                    fields["summary"] = u.summary
+                if u.relationship:
+                    fields["relationship"] = u.relationship
+                if u.category:
+                    fields["category"] = u.category
+                if u.aliases:
+                    fields["aliases"] = list({*meta.aliases, *u.aliases})
+                if u.important_context:
+                    fields["important_context"] = list(
+                        {*meta.important_context, *u.important_context}
+                    )
+                if u.tags:
+                    fields["tags"] = list({*meta.tags, *u.tags})
+                if fields:
+                    people.update(u.id, **fields)
+                if u.append_note:
+                    people.append_note(u.id, u.append_note)
+                applied.append({"action": "updated", "id": u.id})
+
+            elif u.action == "touch":
+                if not u.id or people.get(u.id) is None:
+                    log.warning("auditor.people_touch_missing", id=u.id)
+                    continue
+                people.touch(u.id)
+                applied.append({"action": "touched", "id": u.id})
+
+        except Exception as e:  # noqa: BLE001
+            log.error(
+                "auditor.people_update_failed",
+                action=u.action,
+                id=u.id,
+                name=u.name,
+                error=str(e),
+            )
+    return applied
 
 
 def mock_auditor_report(inp: SummariserInput) -> AuditorReport:
@@ -213,6 +401,7 @@ def mock_auditor_report(inp: SummariserInput) -> AuditorReport:
         current_state_proposed="",
         current_state_rationale="",
         app_feedback=[],
+        people_updates=[],
         usage=Usage(),
     )
 
