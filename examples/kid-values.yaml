@@ -1,9 +1,14 @@
 # Example values for a kid-mode claudia deploy.
 #
-# Kid-mode safety floor is non-disableable per chart/values.schema.json:
-# the haiku_classifier, write_tools_disabled, no_anthropomorphism, and
-# encryption.enabled settings cannot be turned off via values overrides.
-# This is intentional. See docs/design.md "Premise 3" and Premise 4.
+# v1 DEV MODE: NO at-rest encryption. Sessions are stored as plaintext
+# JSONL on the PVC. Anyone with `kubectl exec` access to the pod can
+# read kid session content. Do NOT promise privacy on v1 deploys.
+# Encryption returns at Step 11 — see docs/build-plan-v1.md.
+#
+# The classifier / write-tools / no-anthropomorphism floor IS enforced
+# (const: true in chart/values.schema.json). encryption.enabled is a
+# default-true flag the app currently ignores; it will be re-pinned to
+# const: true at v1.5 via schema migration.
 #
 # Pre-requisites:
 #   1. A Kubernetes cluster with an Ingress controller.
@@ -50,7 +55,7 @@ kid:
     no_anthropomorphism: true       # NON-DISABLEABLE
     session_nudge_minutes: [60, 90] # tunable; v1 ships with two nudges
   encryption:
-    enabled: true                   # NON-DISABLEABLE in kid mode
+    enabled: false                  # v1 dev mode: app does not encrypt. v1.5 restores this.
 
 model:
   primary: claude-sonnet-4-6

@@ -68,8 +68,8 @@
           "properties": {
             "enabled": {
               "type": "boolean",
-              "const": true,
-              "description": "Non-disableable in kid mode. At-rest encryption with kid passphrase + parent break-glass."
+              "default": true,
+              "description": "v1 dev mode: defaults to true but is NOT enforced by the app. At-rest encryption is deferred to Step 11 (see docs/build-plan-v1.md). v1.5 will re-pin this to const: true via schema migration. Do NOT promise privacy on v1 deploys."
             }
           },
           "required": ["enabled"]
