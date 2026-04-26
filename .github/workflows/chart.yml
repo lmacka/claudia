@@ -1,0 +1,54 @@
+name: chart
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  package-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.0
+
+      - name: Compute version (strip leading v)
+        id: ver
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          VERSION="${TAG#v}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Tag: ${TAG} -> chart version: ${VERSION}"
+
+      - name: Set chart + appVersion to tag
+        run: |
+          sed -i "s/^version: .*/version: ${{ steps.ver.outputs.version }}/" chart/Chart.yaml
+          sed -i "s/^appVersion: .*/appVersion: \"${{ steps.ver.outputs.version }}\"/" chart/Chart.yaml
+          cat chart/Chart.yaml
+
+      - name: helm lint
+        run: |
+          helm lint chart/ --values examples/adult-values.yaml
+          helm lint chart/ --values examples/kid-values.yaml
+
+      - name: helm package
+        run: helm package chart/ --destination /tmp/chart-out
+
+      - name: Log in to ghcr.io
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io \
+            --username ${{ github.actor }} --password-stdin
+
+      - name: helm push (OCI)
+        run: |
+          helm push /tmp/chart-out/claudia-${{ steps.ver.outputs.version }}.tgz \
+            oci://ghcr.io/${{ github.repository_owner }}/charts

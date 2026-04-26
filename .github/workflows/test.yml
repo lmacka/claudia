@@ -1,0 +1,78 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.13
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Lint
+        run: uv run ruff check app tests
+
+      - name: Test
+        run: uv run pytest tests/ -q
+
+  helm-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.0
+
+      - name: helm lint adult values
+        run: helm lint chart/ --values examples/adult-values.yaml
+
+      - name: helm lint kid values
+        run: helm lint chart/ --values examples/kid-values.yaml
+
+      - name: helm template adult
+        run: helm template claudia chart/ --values examples/adult-values.yaml > /tmp/adult-render.yaml
+
+      - name: helm template kid
+        run: helm template claudia chart/ --values examples/kid-values.yaml > /tmp/kid-render.yaml
+
+      - name: helm template Gateway API mode
+        run: |
+          helm template claudia chart/ --values examples/adult-values.yaml \
+            --set ingress.gatewayApi=true \
+            --set ingress.parentRef.name=internal-gateway > /tmp/gw-render.yaml
+          grep -q "kind: HTTPRoute" /tmp/gw-render.yaml
+
+      - name: schema rejects kid.safety.haiku_classifier=false
+        run: |
+          if helm template claudia chart/ --values examples/kid-values.yaml \
+            --set kid.safety.haiku_classifier=false 2>/dev/null; then
+            echo "ERROR: schema accepted haiku_classifier=false; safety floor broken"
+            exit 1
+          fi
+
+      - name: schema rejects kid.encryption.enabled=false
+        run: |
+          if helm template claudia chart/ --values examples/kid-values.yaml \
+            --set kid.encryption.enabled=false 2>/dev/null; then
+            echo "ERROR: schema accepted encryption.enabled=false; safety floor broken"
+            exit 1
+          fi
