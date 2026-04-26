@@ -1,0 +1,7 @@
+{# Single-line status row for an in-flight upload. SSE-driven.
+   Expects: doc_id, initial_message (optional). #}
+<div class="library-status-row" data-doc-id="{{ doc_id }}"
+     hx-ext="sse" sse-connect="/library/{{ doc_id }}/stream" sse-swap="message"
+     hx-swap="innerHTML">
+  <small class="muted"><em>{{ initial_message or "starting…" }}</em></small>
+</div>

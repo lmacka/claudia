@@ -2,12 +2,14 @@
 Orchestrator that runs the extractor pipeline against a fresh upload/paste
 and creates a library document.
 
-This is the synchronous version (commit D). Commit E adds an async wrapper
-that streams status messages via SSE.
+process_doc_creation is the synchronous core (used directly by the legacy
+sync POST handlers + by the async wrapper that runs it in an executor and
+streams status via the StatusBus to SSE subscribers).
 """
 
 from __future__ import annotations
 
+import asyncio
 import mimetypes
 import tempfile
 from datetime import UTC, datetime
@@ -17,6 +19,7 @@ import structlog
 
 from app.extractors import Emit, ExtractorRegistry, _noop_emit
 from app.library import DocSource, Library, LibraryDocMeta
+from app.library_stream import StatusBus
 
 log = structlog.get_logger()
 
@@ -61,13 +64,18 @@ def process_doc_creation(
     supersedes: str | None = None,
     tags: list[str] | None = None,
     emit: Emit = _noop_emit,
+    doc_id: str | None = None,
 ) -> str:
     """
     End-to-end: pick extractor → extract → verify → detect_date → create_doc.
 
-    Returns the new doc_id. Raises if the registry has no handler or the
-    extractor fails outright. Verification warnings are recorded in the
-    doc's meta.json (status: 'warn') but do not raise.
+    Returns the new doc_id. If `doc_id` is provided, uses it (caller minted
+    via library.mint_doc_id so the SSE stream can subscribe before the
+    pipeline starts). Otherwise mints internally.
+
+    Raises if the registry has no handler or the extractor fails outright.
+    Verification warnings are recorded in the doc's meta.json (status:
+    'warn') but do not raise.
     """
     if not original_bytes:
         raise ValueError("original_bytes is empty")
@@ -98,7 +106,7 @@ def process_doc_creation(
         refined_title = _refine_title(title, extractor.kind, extract.extra_meta)
 
         meta = LibraryDocMeta(
-            id=library.mint_doc_id(refined_title),
+            id=doc_id or library.mint_doc_id(refined_title),
             title=refined_title,
             kind=extractor.kind,  # kind matches DocKind literal by construction
             source=source,
@@ -145,3 +153,59 @@ def _parse_iso_date(value):
         return _dt.date.fromisoformat(str(value))
     except (TypeError, ValueError):
         return None
+
+
+# ---------------------------------------------------------------------------
+# Async wrapper — runs the sync pipeline in a thread executor + streams
+# status via the StatusBus.
+# ---------------------------------------------------------------------------
+
+
+async def process_doc_creation_async(
+    library: Library,
+    registry: ExtractorRegistry,
+    bus: StatusBus,
+    *,
+    doc_id: str,
+    title: str,
+    original_bytes: bytes,
+    filename: str | None,
+    mime: str,
+    source: DocSource,
+    supersedes: str | None = None,
+    tags: list[str] | None = None,
+) -> str:
+    """
+    Schedule the synchronous pipeline on a thread pool, route status emits
+    to the StatusBus subscriber stream. Caller must have pre-minted `doc_id`
+    via library.mint_doc_id so the client could subscribe before this
+    coroutine started.
+    """
+
+    def emit(msg: str) -> None:
+        bus.emit(doc_id, msg)
+
+    loop = asyncio.get_event_loop()
+    try:
+        result_id = await loop.run_in_executor(
+            None,
+            lambda: process_doc_creation(
+                library,
+                registry,
+                title=title,
+                original_bytes=original_bytes,
+                filename=filename,
+                mime=mime,
+                source=source,
+                supersedes=supersedes,
+                tags=tags,
+                emit=emit,
+                doc_id=doc_id,
+            ),
+        )
+        bus.emit(doc_id, "Done", terminal=True)
+        return result_id
+    except Exception as e:
+        log.error("library.async_pipeline_failed", doc_id=doc_id, error=str(e))
+        bus.emit(doc_id, f"Failed — {e!s}", terminal=True)
+        raise

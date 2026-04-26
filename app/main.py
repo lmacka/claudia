@@ -52,6 +52,7 @@ from app import tool_loop as tool_loop_mod
 from app.claude import SONNET, ClaudeClient, Usage
 from app.extractors import build_registry, make_vision_callables
 from app.library import Library
+from app.library_stream import StatusBus
 from app.context import TZ as BRISBANE_TZ
 from app.context import ContextLoader
 from app.google_auth import GoogleAuthConfig
@@ -115,6 +116,7 @@ class AppState:
     kid_sessions: dict[str, str]  # cookie token -> kid_session_id (in-memory)
     library: Library
     extractor_registry: Any
+    status_bus: StatusBus
 
 
 state = AppState()
@@ -184,6 +186,8 @@ async def lifespan(app: FastAPI):
     else:
         transcribe, spot_check = None, None
     state.extractor_registry = build_registry(transcribe=transcribe, spot_check=spot_check)
+    state.status_bus = StatusBus()
+    state.status_bus.attach_loop(asyncio.get_running_loop())
 
     try:
         rebuild_index(cfg.data_root)
@@ -1603,6 +1607,11 @@ async def library_index(
     )
 
 
+def _is_async_request(request: Request) -> bool:
+    """JS-aware client (HTMX) wants the async streaming path."""
+    return request.headers.get("hx-request", "").lower() == "true"
+
+
 @app.post("/library/upload")
 async def library_upload(
     request: Request, _: str = Depends(require_library_access)
@@ -1618,6 +1627,24 @@ async def library_upload(
         raise HTTPException(413, f"upload exceeds {_LIBRARY_MAX_UPLOAD_BYTES} bytes")
     if not body:
         raise HTTPException(400, "empty upload")
+
+    if _is_async_request(request):
+        doc_id = state.library.mint_doc_id(raw_title)
+        asyncio.create_task(
+            library_pipeline.process_doc_creation_async(
+                state.library,
+                state.extractor_registry,
+                state.status_bus,
+                doc_id=doc_id,
+                title=raw_title,
+                original_bytes=body,
+                filename=upload.filename,
+                mime=upload.content_type or "application/octet-stream",
+                source="upload",
+                tags=raw_tags,
+            )
+        )
+        return RedirectResponse(url=f"/library/{doc_id}/stream", status_code=303)
 
     doc_id = library_pipeline.process_doc_creation(
         state.library,
@@ -1649,6 +1676,25 @@ async def library_paste(
         raw_title = TextExtractor.title_from_text(text, fallback="Pasted note")
 
     body = text.encode("utf-8")
+
+    if _is_async_request(request):
+        doc_id = state.library.mint_doc_id(raw_title)
+        asyncio.create_task(
+            library_pipeline.process_doc_creation_async(
+                state.library,
+                state.extractor_registry,
+                state.status_bus,
+                doc_id=doc_id,
+                title=raw_title,
+                original_bytes=body,
+                filename="paste.txt",
+                mime="text/plain",
+                source="paste",
+                tags=raw_tags,
+            )
+        )
+        return RedirectResponse(url=f"/library/{doc_id}/stream", status_code=303)
+
     doc_id = library_pipeline.process_doc_creation(
         state.library,
         state.extractor_registry,
@@ -1660,6 +1706,20 @@ async def library_paste(
         tags=raw_tags,
     )
     return RedirectResponse(url=f"/library#{doc_id}", status_code=303)
+
+
+@app.get("/library/{doc_id}/stream")
+async def library_doc_stream(
+    doc_id: str, _: str = Depends(require_library_access)
+) -> Response:
+    """SSE endpoint streaming pipeline status messages."""
+    from sse_starlette.sse import EventSourceResponse
+
+    async def event_gen():
+        async for msg in state.status_bus.subscribe(doc_id):
+            yield {"event": "message", "data": msg}
+
+    return EventSourceResponse(event_gen())
 
 
 @app.get("/library/{doc_id}", response_class=HTMLResponse)
