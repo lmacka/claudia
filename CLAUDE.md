@@ -101,15 +101,21 @@ See `TODOS.md` for full context. Captured during /plan-eng-review:
 
 - **Single git repo.** No two-repo split like robo-therapist had with
   coopernetes. App + chart + CI all here.
-- **Local git is fine for now.** Liam will decide when to push to GitHub.
-- **He has authorised commits without asking** ("override the commit rule
-  for this project, I want to work fluidly"). Make commits as work
-  progresses; one logical change = one commit. Still ASK before
-  destructive ops or pushes.
+- **GitHub remote is configured.** `origin =
+  git@github.com:lmacka/claudia.git` (PUBLIC). `gh auth status` is
+  authenticated as `lmacka`. Don't ask to `gh repo create`.
+- **He has authorised commits AND pushes without asking.** Both rules
+  overridden ("override the commit rule for this project, I want to
+  work fluidly" and "each iteration I want you to publish for me to
+  test"). Make commits as work progresses; push to `origin/main` after
+  every landed batch (a step or sub-step). Tag a release (`v0.X.Y`)
+  when the batch is worth user testing — `image.yml` and `chart.yml`
+  workflows trigger on `v*.*.*` and publish to ghcr.io.
+- **Still ASK before destructive ops.** Force-push, branch delete, tag
+  delete, force-push to main never OK without explicit instruction.
 - **Commit style:** minimal messages, no emojis, no Co-Authored-By,
   no signatures, under 200 chars title, body explains the why.
 - **Tests always green before commit.** `uv run pytest tests/ -q`.
-- **Never push to a remote without asking.** Local git is the default.
 - **Bridge-tool ethos still applies.** Don't make claudia more engaging for
   engagement's sake. Removed UI ceremony (per robo-therapist iterations 7-8)
   but the principle stands.
@@ -172,7 +178,6 @@ See `TODOS.md` for full context. Captured during /plan-eng-review:
 
 ## Don'ts
 
-- Don't add a remote without asking.
 - Don't relax the kid-mode safety floor schema constraints.
 - Don't put chat content in pod logs.
 - Don't make claudia more engaging for engagement's sake.
@@ -180,3 +185,4 @@ See `TODOS.md` for full context. Captured during /plan-eng-review:
   handover PDF, tool-use loop). Lift, don't re-design.
 - Don't commit anything from `/data/`, `staging/`, `library/`, `people/`,
   or `.credentials/` (in `.gitignore`).
+- Don't force-push or delete branches/tags without explicit instruction.
