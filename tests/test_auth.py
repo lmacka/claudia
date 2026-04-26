@@ -20,7 +20,6 @@ import pytest
 
 from app import auth as auth_mod
 
-
 # ---------------------------------------------------------------------------
 # Passphrase set + verify
 # ---------------------------------------------------------------------------
@@ -92,14 +91,16 @@ def test_rate_limiter_allows_under_threshold() -> None:
 
 def test_rate_limiter_separate_ips() -> None:
     rl = auth_mod.IPRateLimiter(max_attempts=2, window_seconds=60)
-    rl.record("a"); rl.record("a")
+    rl.record("a")
+    rl.record("a")
     assert not rl.check("a")
     assert rl.check("b")  # different IP unaffected
 
 
 def test_rate_limiter_reset_on_success() -> None:
     rl = auth_mod.IPRateLimiter(max_attempts=2, window_seconds=60)
-    rl.record("a"); rl.record("a")
+    rl.record("a")
+    rl.record("a")
     assert not rl.check("a")
     rl.reset("a")
     assert rl.check("a")
@@ -108,7 +109,8 @@ def test_rate_limiter_reset_on_success() -> None:
 def test_rate_limiter_window_expiry() -> None:
     """Old attempts outside the window don't count."""
     rl = auth_mod.IPRateLimiter(max_attempts=2, window_seconds=1)
-    rl.record("a"); rl.record("a")
+    rl.record("a")
+    rl.record("a")
     assert not rl.check("a")
     time.sleep(1.2)
     assert rl.check("a")
