@@ -178,3 +178,62 @@ plan review; it should not become a misleading artifact.
 Start with the README rule and reviewer checklist. Escalate if it bites.
 
 **Depends on:** v1 shipped (so we have the route surface stabilised).
+
+## T-NEW-A — v1.5 mood_signal classification + conditional check-in
+
+**What:** Auditor-kid emits a `mood_signal: positive | neutral | negative`
+field. Companion-kid reads it from the precis-stack at session-start and
+adds a one-line conversational check-in ("Hey. Last time it sounded rough
+— how's today going?") only when the previous session was negative.
+
+**Why:** Captured during /plan-design-review on 2026-04-26. v1 ships
+greetings as a flat rotation with no conditional behaviour because we
+have zero Jasper-shaped data to tune the negative-classification
+threshold against. The "we noticed last time was rough" empathy moment
+is real but premature.
+
+**Pros:** One of the few empathy moments we kept after stripping mood
+widgets and action chips; restores some of the design-doc intent without
+re-adding UI chrome.
+
+**Cons:** Threshold tuning needs real data; over-eager classification is
+patronising; under-eager misses real bad days. v1 ships without it.
+
+**Context:** Implementation sketch in `~/.gstack/projects/claudia/designs/kid-chat-20260426/plan.md`
+under Pass 7A. Auditor prompt addition (`mood_signal` field) and
+companion-kid prompt logic (read precis_stack[-1].mood_signal on session
+open) are both small. The hard part is the classification heuristic in
+the auditor prompt.
+
+**Depends on:** v1 shipped + ≥4 weeks of Jasper-shaped use.
+
+## T-NEW-B — Wireframe regeneration after v1 design departures
+
+**What:** Update or regenerate `docs/wireframe/chat-kid.html`,
+`docs/wireframe/kid-firstchat.html`, and any setup wireframes that
+reference removed elements (action chips, mood slider, persistent
+crisis banner) or imply encryption-mediated confidentiality.
+
+**Why:** Captured during /plan-design-review on 2026-04-26. The v1
+build plan dropped the action prompts panel, the mood widget, and the
+always-visible crisis banner. Stale wireframes will mislead future
+implementers and reviewers. Per T6 (wireframe-implementation parity).
+
+**Pros:** Wireframes stop lying; future plan reviews work against
+accurate visual specs.
+
+**Cons:** AI designer (gpt-image-1) needed for clean regeneration; or
+hand-edit via inline annotations. Hand-edit is cheaper but uglier.
+
+**Context:** Two viable shapes:
+- (a) Inline `<!-- v1: this element removed, see docs/build-plan-v1.md -->`
+  comments next to dropped elements. Cheap, ugly, easy to miss.
+- (b) Regenerate the affected pages via the gstack designer (now
+  unblocked, OpenAI org verified) using variant-C styling as the
+  reference. Cleaner, longer.
+
+Recommended (b) once Step 7b lands so the regenerated wireframes can
+match the live app's visual language.
+
+**Depends on:** Step 7b (template re-skin) — so wireframe and live app
+use the same design language.

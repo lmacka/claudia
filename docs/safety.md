@@ -1,9 +1,34 @@
 # Kid-mode safety floor
 
 This document describes the safety mechanisms that fire in kid mode and the
-red-team criteria for shipping. Per the chart's `values.schema.json`, every
-mechanism in the floor is non-disableable: the schema rejects values that
-would turn them off.
+red-team criteria for shipping.
+
+> ## ⚠ v1 dev-mode floor (narrowed)
+>
+> v1 ships kid mode WITHOUT at-rest encryption (per `docs/build-plan-v1.md`).
+> Sessions are stored as plaintext JSONL on the PVC. Anyone with `kubectl exec`
+> access to the pod can read kid session content. Do NOT promise privacy on
+> v1 deploys; the kid first-chat banner is honest about this ("this is yours,
+> but not secret — your dad can read what you write if they really need to").
+>
+> The schema-enforced floor narrows from four items to three:
+>
+> | Floor item | v1 status |
+> |---|---|
+> | `kid.safety.haiku_classifier` | ✅ const: true (enforced) |
+> | `kid.safety.write_tools_disabled` | ✅ const: true (enforced) |
+> | `kid.safety.no_anthropomorphism` | ✅ const: true (enforced) |
+> | `kid.encryption.enabled` | ⚠ default: true (NOT enforced — v1.5 restores) |
+>
+> v1.5 restores encryption (Step 11 in `docs/build-plan-v1.md`) and re-pins
+> `kid.encryption.enabled` to const: true via schema migration. Until then
+> the threat model is "single-tenant Helm release on the parent's homelab,
+> parent owns the cluster and can read everything anyway." This is defensible
+> for the bus-factor-one trust model the project assumes; it is not defensible
+> for any deploy targeting non-family adversarial threat models.
+
+Per the chart's `values.schema.json`, the three remaining floor items are
+non-disableable: the schema rejects values that would turn them off.
 
 ## Active mechanisms (v0.1.0)
 
@@ -79,13 +104,17 @@ chart already enforces the env var).
 
 After every kid session, two outputs are produced:
 
-- **Encrypted full session-log** (kid passphrase + parent break-glass)
-- **Plaintext audit precis** with themes only — no quotes, no specifics
+- **Full session-log** (v1 dev mode: stored plaintext on disk; v1.5 will
+  encrypt with kid passphrase + parent break-glass envelope)
+- **Themes-only audit precis** — no quotes, no specifics. The everyday
+  parent view at `/admin/review`.
 
-Per /plan-eng-review D12 the precis goes through a regex scrubber + Haiku
-judge before the parent reads it. Implementation lands in v0.2 (the
-auditor needs structured output rewrite). For v0.1.0 the auditor still
-runs on adult mode only.
+In v1 dev mode the parent CAN read the full session-log directly (it's
+plaintext), but the precis is the everyday surface. Per /plan-eng-review
+D12 the precis goes through a regex scrubber + Haiku judge before the
+parent reads it. Implementation lands in v0.2 (the auditor needs
+structured output rewrite). For v0.1.0 the auditor still runs on adult
+mode only.
 
 ## Red-team v1 ship criteria
 
@@ -146,10 +175,14 @@ Claudia does not, and does not try to:
 - Protect against motivated adversarial prompting beyond the floor
   described here
 - Notify emergency services on the kid's behalf
+- (v1 dev mode) Encrypt session content at rest. Kid sessions sit
+  plaintext on the PVC; the parent (cluster operator) can read them
+  directly. v1.5 restores at-rest encryption.
 
-The break-glass envelope is the only out-of-band recovery path for
-encrypted data. If the kid forgets their passphrase AND the parent loses
-the envelope, the data is unrecoverable.
+In v1 dev mode there is no break-glass envelope. If the kid forgets
+their passphrase, the parent resets it via `/admin`. v1.5 reintroduces
+the envelope as the out-of-band recovery path for encrypted data; until
+then there's no encrypted data to recover.
 
 If a parent inheriting this project — `git clone`, `helm install` — is
 not prepared to be the safety net themselves, this is the wrong tool.
