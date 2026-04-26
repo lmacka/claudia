@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}robo — connect Gmail{% endblock %}
+{% block content %}
+<header><a href="/" class="muted">&larr; home</a></header>
+
+{% if variant == "connected" %}
+  <h1>Gmail connected</h1>
+  <p>Liam's account has read access + draft creation + calendar read/write.</p>
+  <p class="muted">
+    <small>Scopes:</small>
+    <ul class="scope-list">
+      {% for s in scopes %}<li><code>{{ s }}</code></li>{% endfor %}
+    </ul>
+  </p>
+  <p><a href="/connect-gmail/disconnect" role="button" class="secondary outline">Disconnect</a></p>
+
+{% elif variant == "connect" %}
+  <h1>Connect Gmail</h1>
+  <p>
+    Grants this app read-only access to Gmail, the ability to create
+    drafts (never send), and calendar read + event creation.
+  </p>
+  <p><a href="{{ auth_url }}" role="button" class="primary">Authorise with Google</a></p>
+  <p><a href="/" class="muted">Cancel</a></p>
+
+{% elif variant == "config_missing" %}
+  <h1>Gmail connect unavailable</h1>
+  <p><code>GOOGLE_OAUTH_CLIENT_ID</code> and <code>GOOGLE_OAUTH_CLIENT_SECRET</code> are not set in the pod env.</p>
+  <p><a href="/" class="muted">Home</a></p>
+
+{% elif variant == "callback_ok" %}
+  <h1>Gmail connected</h1>
+  <p>You can close this tab.</p>
+  <p><a href="/" role="button">Home</a></p>
+
+{% elif variant == "callback_error" %}
+  <h1>OAuth exchange failed</h1>
+  <pre class="err">{{ error }}</pre>
+  <p><a href="/connect-gmail" role="button">Try again</a></p>
+
+{% else %}
+  <p class="muted">Unknown state.</p>
+{% endif %}
+{% endblock %}

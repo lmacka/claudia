@@ -1,0 +1,19 @@
+{# Mood capture panel: shown in place of the compose form when a session has ended. #}
+<section id="msg-form" class="mood-end-panel">
+  <h2>How regulated are you right now?</h2>
+  <p class="muted"><small>Body, not theory. 1 = worst of the crisis, 10 = a good Tuesday.</small></p>
+  <form hx-post="/session/{{ session_id }}/mood"
+        hx-target="#msg-form"
+        hx-swap="outerHTML"
+        class="mood-end-form">
+    <div class="mood-row">
+      <input type="range" name="regulation_score" min="1" max="10" step="1" value="5"
+             oninput="document.getElementById('mood-end-val').textContent = this.value">
+      <span class="mood-value"><strong id="mood-end-val">5</strong><small class="muted">/10</small></span>
+    </div>
+    <div class="mood-end-actions">
+      <button type="submit" class="primary">Record mood</button>
+      <a href="/" role="button" class="secondary outline">Skip, go home</a>
+    </div>
+  </form>
+</section>

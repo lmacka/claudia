@@ -1,0 +1,65 @@
+# claudia Helm values — see docs/design.md "Helm chart values" section
+# IMMUTABLE post-install: mode, encryption settings.
+
+mode: adult                   # adult | kid — IMMUTABLE post-install
+
+displayName: ""               # required: e.g. "Liam" or "Jasper"
+dob: ""                       # required: ISO date e.g. "1985-02-14"; age computed
+country: "AU"                 # affects timezone and crisis hotlines
+
+theme: sage                   # sage | blush | lavender | amber | contrast
+
+anthropicSecretRef:
+  name: anthropic-api-key
+  key: api-key
+
+googleOAuthSecretRef:         # optional; adult mode only
+  enabled: false
+  name: google-oauth
+  clientIdKey: client-id
+  clientSecretKey: client-secret
+
+basicAuth:
+  passwordSecretRef:
+    name: claudia-auth
+    key: password             # adult: chat password; kid: parent-admin password
+
+# kid-mode-only block — ignored when mode=adult
+kid:
+  parentDisplayName: "your parents"   # e.g. "your dad", "your mum", "your parents"
+  safety:
+    haiku_classifier: true            # NON-DISABLEABLE per values.schema.json
+    write_tools_disabled: true        # blocks Gmail send / calendar create
+    no_anthropomorphism: true         # forbids "I miss you" / streaks / romance
+    session_nudge_minutes: [60, 90]   # "you've been chatting a while"
+  encryption:
+    enabled: true                     # at-rest encryption with kid passphrase
+
+model:
+  primary: claude-sonnet-4-6
+  classifier: claude-haiku-4-5
+
+pvc:
+  size: 10Gi
+  storageClassName: ""                # empty = cluster default
+
+ingress:
+  enabled: true
+  host: ""                            # required: e.g. claudia.example.com
+  className: ""                       # empty = cluster default
+  tls:
+    enabled: true
+    secretName: ""                    # required if tls.enabled
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+
+image:
+  repository: ghcr.io/lmacka/claudia
+  tag: ""                             # defaults to chart appVersion if empty
+  pullPolicy: IfNotPresent

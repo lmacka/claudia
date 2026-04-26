@@ -1,0 +1,192 @@
+{% extends "base.html" %}
+{% block title %}robo — chat{% endblock %}
+{% block content %}
+<header class="session-header">
+  <a href="/" class="muted">&larr; home</a>
+</header>
+
+{% set _has_visible = messages | selectattr('content') | first is defined %}
+{% if header.status == "active" and not _has_visible and opener_expected %}
+  {% set polling = True %}
+  {% set poll_url = "/session/" ~ header.session_id ~ "/messages-poll" %}
+  {% include "fragments/messages_list.html" %}
+{% else %}
+<section id="messages" class="messages">
+  {% for m in messages %}
+    {% if m.content %}
+      {% if m.role == "user" %}
+        <article class="msg msg-user"><div class="msg-body">{{ m.content }}</div></article>
+      {% elif m.role == "assistant" %}
+        <article class="msg msg-assistant"><div class="msg-body">{{ m.content }}</div></article>
+      {% endif %}
+    {% endif %}
+  {% endfor %}
+</section>
+{% endif %}
+
+{% if header.status == "active" %}
+<form id="msg-form"
+      hx-post="/session/{{ header.session_id }}/message"
+      hx-target="#messages"
+      hx-swap="beforeend"
+      hx-on::before-request="roboEchoUser(event)"
+      hx-on::after-request="roboClearPendingEcho(); this.reset(); document.getElementById('content').focus(); roboScrollBottom();"
+      hx-on::after-swap="roboScrollBottom();"
+      class="compose">
+  <textarea name="content" id="content" rows="3" placeholder="…" autofocus required
+            onpaste="roboHandlePaste(event, '{{ header.session_id }}')"></textarea>
+  <div class="compose-actions">
+    <label class="file-upload-btn secondary outline" title="Upload PDF or image">
+      <input type="file" id="uploader" accept=".pdf,.png,.jpg,.jpeg,.txt,.md,.eml" style="display:none"
+             onchange="roboUpload(this)">
+      Upload
+    </label>
+    <button type="button" class="secondary outline" onclick="roboPasteChat('{{ header.session_id }}')">
+      Paste chat
+    </button>
+    <button type="submit" class="primary">Send</button>
+    <small class="muted htmx-indicator">thinking…</small>
+  </div>
+  <div id="upload-status" class="muted"><small></small></div>
+</form>
+<form method="post" action="/session/{{ header.session_id }}/end" class="end-bottom"
+      onsubmit="return confirm('End this session?');">
+  <button type="submit" class="secondary outline">End session</button>
+</form>
+{% elif header.status == "ended" %}
+  {% set session_id = header.session_id %}
+  {% include "fragments/mood_panel.html" %}
+{% else %}
+<p class="muted">
+  <em>Session {{ header.status }}.</em>
+  <a href="/">Home</a>
+</p>
+{% endif %}
+
+<script>
+  function roboScrollBottom() {
+    // Scroll the latest message into view. Use rAF so the swapped DOM is
+    // measured before we scroll.
+    requestAnimationFrame(function() {
+      const msgs = document.getElementById('messages');
+      if (!msgs) return;
+      const last = msgs.lastElementChild;
+      if (last && last.scrollIntoView) {
+        last.scrollIntoView({ block: 'end', behavior: 'smooth' });
+      } else {
+        window.scrollTo(0, document.body.scrollHeight);
+      }
+    });
+  }
+
+  // Initial scroll on page load.
+  document.addEventListener('DOMContentLoaded', roboScrollBottom);
+
+  // After the polling fragment swaps (opener arrives, etc.), scroll too.
+  document.body.addEventListener('htmx:afterSwap', function(evt) {
+    if (evt.detail && evt.detail.target && evt.detail.target.id === 'messages') {
+      roboScrollBottom();
+    }
+  });
+
+  function roboEchoUser(evt) {
+    const ta = document.getElementById('content');
+    const text = (ta && ta.value || '').trim();
+    if (!text) return;
+    const wrap = document.createElement('article');
+    wrap.className = 'msg msg-user';
+    wrap.setAttribute('data-pending-echo', '1');
+    const body = document.createElement('div');
+    body.className = 'msg-body';
+    body.textContent = text;
+    wrap.appendChild(body);
+    const msgs = document.getElementById('messages');
+    if (msgs) msgs.appendChild(wrap);
+    roboScrollBottom();
+  }
+
+  function roboClearPendingEcho() {
+    document.querySelectorAll('[data-pending-echo]').forEach(n => n.remove());
+  }
+
+  async function roboUpload(input) {
+    const f = input.files && input.files[0];
+    if (!f) return;
+    const status = document.querySelector('#upload-status small');
+    status.textContent = `Uploading ${f.name}…`;
+    const body = new FormData();
+    body.append('file', f);
+    try {
+      const res = await fetch('/upload', { method: 'POST', body });
+      const j = await res.json();
+      if (res.ok) {
+        status.textContent = `Saved to ${j.path}.`;
+        document.getElementById('content').value +=
+          (document.getElementById('content').value ? ' ' : '') + `[uploaded: ${j.path}]`;
+      } else {
+        status.textContent = `Upload failed: ${j.error || res.status}`;
+      }
+    } catch (e) {
+      status.textContent = `Upload error: ${e}`;
+    }
+    input.value = '';
+  }
+
+  async function roboHandlePaste(e, sessionId) {
+    const items = (e.clipboardData || {}).items || [];
+    for (const it of items) {
+      if (it.kind === 'file' && it.type.startsWith('image/')) {
+        e.preventDefault();
+        const blob = it.getAsFile();
+        const status = document.querySelector('#upload-status small');
+        status.textContent = 'Saving pasted image…';
+        const body = new FormData();
+        body.append('file', blob, `pasted-${Date.now()}.png`);
+        const res = await fetch('/upload', { method: 'POST', body });
+        const j = await res.json();
+        if (res.ok) {
+          status.textContent = `Pasted image saved to ${j.path}.`;
+          const ta = document.getElementById('content');
+          ta.value += (ta.value ? ' ' : '') + `[uploaded: ${j.path}]`;
+        } else {
+          status.textContent = `Paste failed: ${j.error || res.status}`;
+        }
+        return;
+      }
+    }
+    const text = (e.clipboardData || {}).getData?.('text') || '';
+    if (text && text.length > 4000) {
+      if (!confirm(`That's a big paste (${text.length} chars). Save as a file and reference it instead of inlining?`)) return;
+      e.preventDefault();
+      const body = new FormData();
+      body.append('content', text);
+      body.append('label', 'pasted-text');
+      const res = await fetch(`/session/${sessionId}/paste`, { method: 'POST', body });
+      const j = await res.json();
+      if (res.ok) {
+        const ta = document.getElementById('content');
+        ta.value += (ta.value ? ' ' : '') + `[pasted: ${j.path}]`;
+      }
+    }
+  }
+
+  async function roboPasteChat(sessionId) {
+    const text = prompt('Paste the chat/email here. It will be saved as a file under uploads/pastes/.');
+    if (!text) return;
+    const label = prompt('Optional label (letters/numbers/dashes):', 'paste') || 'paste';
+    const body = new FormData();
+    body.append('content', text);
+    body.append('label', label);
+    const res = await fetch(`/session/${sessionId}/paste`, { method: 'POST', body });
+    const j = await res.json();
+    const status = document.querySelector('#upload-status small');
+    if (res.ok) {
+      status.textContent = `Saved to ${j.path}.`;
+      const ta = document.getElementById('content');
+      ta.value += (ta.value ? ' ' : '') + `[pasted: ${j.path}]`;
+    } else {
+      status.textContent = `Paste failed: ${res.status}`;
+    }
+  }
+</script>
+{% endblock %}

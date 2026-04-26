@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "claudia Helm values",
+  "description": "Schema for claudia Helm chart values. Enforces the kid-mode safety floor non-disableably.",
+  "type": "object",
+  "required": ["mode", "displayName", "dob"],
+  "properties": {
+    "mode": {
+      "type": "string",
+      "enum": ["adult", "kid"],
+      "description": "IMMUTABLE post-install. Determines persona, safety floor, route surface, encryption."
+    },
+    "displayName": {
+      "type": "string",
+      "minLength": 1,
+      "description": "How claudia addresses the user."
+    },
+    "dob": {
+      "type": "string",
+      "format": "date",
+      "description": "ISO date. Age computed from this."
+    },
+    "country": {
+      "type": "string",
+      "default": "AU"
+    },
+    "theme": {
+      "type": "string",
+      "enum": ["sage", "blush", "lavender", "amber", "contrast"],
+      "default": "sage"
+    },
+    "kid": {
+      "type": "object",
+      "description": "Only honoured when mode=kid. Safety subsection has non-disableable floors.",
+      "properties": {
+        "parentDisplayName": {
+          "type": "string",
+          "default": "your parents"
+        },
+        "safety": {
+          "type": "object",
+          "properties": {
+            "haiku_classifier": {
+              "type": "boolean",
+              "const": true,
+              "description": "Non-disableable. Pre-turn safety classifier call. See docs/design.md Premise 3."
+            },
+            "write_tools_disabled": {
+              "type": "boolean",
+              "const": true,
+              "description": "Non-disableable. Gmail send and calendar create blocked in kid mode."
+            },
+            "no_anthropomorphism": {
+              "type": "boolean",
+              "const": true,
+              "description": "Non-disableable. Kid prompt forbids streaks, romance, exclusivity, anti-parent secrecy."
+            },
+            "session_nudge_minutes": {
+              "type": "array",
+              "items": { "type": "integer", "minimum": 5, "maximum": 240 },
+              "default": [60, 90]
+            }
+          },
+          "required": ["haiku_classifier", "write_tools_disabled", "no_anthropomorphism"]
+        },
+        "encryption": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "const": true,
+              "description": "Non-disableable in kid mode. At-rest encryption with kid passphrase + parent break-glass."
+            }
+          },
+          "required": ["enabled"]
+        }
+      }
+    },
+    "anthropicSecretRef": {
+      "type": "object",
+      "required": ["name", "key"]
+    },
+    "basicAuth": {
+      "type": "object",
+      "required": ["passwordSecretRef"]
+    },
+    "model": {
+      "type": "object",
+      "properties": {
+        "primary": { "type": "string", "default": "claude-sonnet-4-6" },
+        "classifier": { "type": "string", "default": "claude-haiku-4-5" }
+      }
+    },
+    "pvc": {
+      "type": "object",
+      "properties": {
+        "size": { "type": "string", "default": "10Gi" },
+        "storageClassName": { "type": "string" }
+      }
+    },
+    "ingress": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "host": { "type": "string", "minLength": 1 },
+        "className": { "type": "string" },
+        "tls": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean", "default": true },
+            "secretName": { "type": "string" }
+          }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "mode": { "const": "kid" } }
+      },
+      "then": {
+        "required": ["kid"],
+        "properties": {
+          "kid": {
+            "required": ["safety", "encryption"]
+          }
+        }
+      }
+    }
+  ]
+}

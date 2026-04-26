@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}robo{% endblock %}
+{% block content %}
+<header class="home-header">
+  <h1>robo</h1>
+</header>
+
+{% if mood_sparkline %}
+  <aside class="mood-strip">
+    <span class="bridge-mood" title="regulation trend, last 20 sessions">mood: {{ mood_sparkline }}</span>
+  </aside>
+{% endif %}
+
+{% if active %}
+  <article class="resume-banner">
+    <strong>Unfinished session from {{ active.label }}</strong>
+    <div class="row">
+      <a href="/session/{{ active.session_id }}" role="button">Resume</a>
+      <form method="post" action="/session/{{ active.session_id }}/end" class="inline">
+        <button type="submit" class="secondary outline">End</button>
+      </form>
+    </div>
+  </article>
+{% else %}
+  <a href="/session/new" role="button" class="primary-cta">New session</a>
+{% endif %}
+
+<section>
+  <h2>Past sessions</h2>
+  {% if not sessions %}
+    <p class="muted">No sessions yet. Start one above.</p>
+  {% else %}
+    <ul class="session-list">
+      {% for s in sessions %}
+        <li>
+          <a href="/session/{{ s.session_id }}">
+            <div class="session-list-main">
+              <strong>{{ s.label }}</strong>
+            </div>
+            {% if s.mood is not none %}
+              <span class="session-mood" title="mood at session end">{{ s.mood }}/10</span>
+            {% endif %}
+          </a>
+        </li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+</section>
+
+<section class="report-link">
+  <h2>Therapist handover</h2>
+  <p class="muted"><small>Generate a one-page note covering recent sessions to take to your real therapist.</small></p>
+  <a href="/report" role="button" class="secondary outline">Generate report</a>
+</section>
+{% endblock %}

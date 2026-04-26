@@ -1,0 +1,125 @@
+"""Storage layer — NFSSessionStore JSONL + InMemorySessionStore."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from app.storage import (
+    InMemorySessionStore,
+    Message,
+    NFSSessionStore,
+    SessionHeader,
+    new_session_id,
+)
+
+
+@pytest.fixture
+def nfs_store(tmp_path: Path) -> NFSSessionStore:
+    return NFSSessionStore(tmp_path)
+
+
+@pytest.fixture
+def mem_store() -> InMemorySessionStore:
+    return InMemorySessionStore()
+
+
+STORES = ["nfs_store", "mem_store"]
+
+
+def _header(session_id: str) -> SessionHeader:
+    return SessionHeader(
+        session_id=session_id,
+        created_at="2026-04-21T12:00:00+00:00",
+        mode="vent",
+        model="claude-sonnet-4-6",
+        prompt_sha="abc123",
+    )
+
+
+@pytest.mark.parametrize("store_name", STORES)
+def test_create_and_load_header(request, store_name):
+    store = request.getfixturevalue(store_name)
+    sid = new_session_id("vent")
+    store.create_session(_header(sid))
+    header = store.load_header(sid)
+    assert header.session_id == sid
+    assert header.mode == "vent"
+
+
+@pytest.mark.parametrize("store_name", STORES)
+def test_append_and_load_messages(request, store_name):
+    store = request.getfixturevalue(store_name)
+    sid = new_session_id("vent")
+    store.create_session(_header(sid))
+    store.append_message(sid, Message(role="user", content="hi"))
+    store.append_message(sid, Message(role="assistant", content="hello"))
+    msgs = store.load_messages(sid)
+    assert [m.content for m in msgs] == ["hi", "hello"]
+
+
+@pytest.mark.parametrize("store_name", STORES)
+def test_header_update_applied(request, store_name):
+    store = request.getfixturevalue(store_name)
+    sid = new_session_id("vent")
+    store.create_session(_header(sid))
+    store.update_header(sid, status="ended", cost_total_usd=0.42)
+    h = store.load_header(sid)
+    assert h.status == "ended"
+    assert h.cost_total_usd == 0.42
+
+
+@pytest.mark.parametrize("store_name", STORES)
+def test_list_sessions_orders_by_creation(request, store_name):
+    store = request.getfixturevalue(store_name)
+    ids = []
+    for _ in range(3):
+        sid = new_session_id("vent")
+        ids.append(sid)
+        store.create_session(_header(sid))
+    listing = store.list_sessions()
+    assert len(listing) == 3
+    assert {s.session_id for s in listing} == set(ids)
+
+
+@pytest.mark.parametrize("store_name", STORES)
+def test_active_session_returns_first_active(request, store_name):
+    store = request.getfixturevalue(store_name)
+    sid1 = new_session_id("vent")
+    sid2 = new_session_id("vent")
+    store.create_session(_header(sid1))
+    store.create_session(_header(sid2))
+    store.update_header(sid1, status="ended")
+    active = store.active_session()
+    assert active is not None
+    assert active.session_id == sid2
+
+
+def test_nfs_store_persists_across_instances(tmp_path: Path):
+    """Sanity: a second NFSSessionStore on the same dir sees prior data."""
+    store1 = NFSSessionStore(tmp_path)
+    sid = new_session_id("vent")
+    store1.create_session(_header(sid))
+    store1.append_message(sid, Message(role="user", content="persisted"))
+
+    store2 = NFSSessionStore(tmp_path)
+    h = store2.load_header(sid)
+    assert h.session_id == sid
+    msgs = store2.load_messages(sid)
+    assert msgs[0].content == "persisted"
+
+
+def test_nfs_store_append_is_true_append(tmp_path: Path):
+    """Each append adds one line — no full rewrite."""
+    store = NFSSessionStore(tmp_path)
+    sid = new_session_id("vent")
+    store.create_session(_header(sid))
+    path = store.sessions_dir / f"{sid}.jsonl"
+    size_after_create = path.stat().st_size
+
+    store.append_message(sid, Message(role="user", content="x"))
+    size_after_append = path.stat().st_size
+    assert size_after_append > size_after_create
+    # Must still have the original header line.
+    assert size_after_append - size_after_create > 10

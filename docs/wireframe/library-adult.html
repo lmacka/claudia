@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en" class="theme-sage">
+<head>
+<meta charset="UTF-8"><title>library</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="mockbar">
+  <a href="index.html">&larr; map</a>
+  <strong>/library</strong> &mdash; document context store
+  <span class="role">adult</span>
+</div>
+
+<div class="nav">
+  <span class="brand"><a href="home-adult.html" style="color: inherit;">claudia</a></span>
+  <a href="library-adult.html">library</a>
+  <a href="people-adult.html">people</a>
+  <a href="report-adult.html">report</a>
+  <span class="spacer"></span>
+  <a href="settings.html">settings</a>
+</div>
+
+<h1>library</h1>
+<p style="color: var(--text-dim);">Documents claudia knows about. Drop new ones any time. The same UI is /admin/library in kid-mode deployments.</p>
+
+<div class="panel">
+  <h3>add</h3>
+  <div class="dropzone">
+    drop files here &middot; <button class="btn">paste text</button>
+  </div>
+  <div class="status-line" style="margin-top: 12px;">
+    extracting page 17/32&hellip; &mdash; <em>2018-DC-Diagnostic.pdf</em>
+  </div>
+</div>
+
+<div class="panel">
+  <h3>active documents</h3>
+  <table>
+    <tr>
+      <th></th><th>title</th><th>kind</th><th>original date</th><th>tags</th><th></th>
+    </tr>
+    <tr>
+      <td><span class="dot green"></span></td>
+      <td>DC Diagnostic &mdash; Liam Mackenzie</td>
+      <td>pdf</td>
+      <td>2018-03-12</td>
+      <td>diagnostic, autism</td>
+      <td><a href="#">view</a></td>
+    </tr>
+    <tr>
+      <td><span class="dot green"></span></td>
+      <td>MIGDAS-2 Report</td>
+      <td>pdf</td>
+      <td>2024-08-20</td>
+      <td>diagnostic</td>
+      <td><a href="#">view</a></td>
+    </tr>
+    <tr>
+      <td><span class="dot amber"></span></td>
+      <td>WhatsApp &mdash; Rhiannon &mdash; 1,243 msgs</td>
+      <td>chat export</td>
+      <td>2025-09-12 &rarr; 2026-04-20</td>
+      <td>co-parent</td>
+      <td><a href="#">view</a></td>
+    </tr>
+    <tr>
+      <td><span class="dot green"></span></td>
+      <td>Screenshot &mdash; school enrolment letter</td>
+      <td>image</td>
+      <td>2026-04-22 (exif)</td>
+      <td>school, urgent</td>
+      <td><a href="#">view</a></td>
+    </tr>
+    <tr>
+      <td><span class="dot red"></span></td>
+      <td>old.doc</td>
+      <td>doc</td>
+      <td>unknown</td>
+      <td></td>
+      <td><a href="#">retry</a></td>
+    </tr>
+  </table>
+  <p class="note">dot = verification: <span class="dot green"></span> ok, <span class="dot amber"></span> warn (usable), <span class="dot red"></span> fail (blocked)</p>
+</div>
+
+<details>
+  <summary style="color: var(--text-dim); cursor: pointer; padding: 6px 0;">archived (2)</summary>
+  <p style="margin: 10px 0; color: var(--text-dim);">superseded + soft-deleted docs go here</p>
+</details>
+
+<footer><a href="index.html">&larr; back to map</a></footer>
+
+</body>
+</html>

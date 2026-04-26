@@ -1,0 +1,280 @@
+/* claudia wireframe — dark base with pastel accents. Theme picker on /settings. */
+
+* { box-sizing: border-box; }
+
+/* ---- THEMES ---- */
+/* default = sage */
+:root,
+.theme-sage {
+  --bg:        #1a1d1c;
+  --panel:     #232726;
+  --panel-2:   #2c3130;
+  --border:    #3a4140;
+  --text:      #e8eae6;
+  --text-dim:  #9aa39e;
+  --accent:    #b8d4b8;       /* sage */
+  --accent-2:  #8fb88f;
+  --accent-soft:#2d3a2d;
+  --warning:   #e6c89c;
+  --danger:    #e89797;
+  --ok:        #a5c9a5;
+}
+
+.theme-blush {
+  --bg:        #1d1a1a;
+  --panel:     #272323;
+  --panel-2:   #312b2b;
+  --border:    #413a3a;
+  --text:      #eae6e6;
+  --text-dim:  #a39e9e;
+  --accent:    #f4c2c2;       /* warm pink */
+  --accent-2:  #d49a9a;
+  --accent-soft:#3a2d2d;
+  --warning:   #e6c89c;
+  --danger:    #e88a8a;
+  --ok:        #a5c9a5;
+}
+
+.theme-lavender {
+  --bg:        #1c1a1f;
+  --panel:     #25232a;
+  --panel-2:   #2e2c34;
+  --border:    #3e3b46;
+  --text:      #e8e6ea;
+  --text-dim:  #9e9aa3;
+  --accent:    #c8b8e0;       /* lavender */
+  --accent-2:  #a690c2;
+  --accent-soft:#322d3a;
+  --warning:   #e6c89c;
+  --danger:    #e89797;
+  --ok:        #a5c9a5;
+}
+
+.theme-amber {
+  --bg:        #1d1c1a;
+  --panel:     #272623;
+  --panel-2:   #312f2b;
+  --border:    #41403a;
+  --text:      #eae9e6;
+  --text-dim:  #a3a09a;
+  --accent:    #e6c89c;       /* warm amber */
+  --accent-2:  #c4a87a;
+  --accent-soft:#3a352d;
+  --warning:   #e6c89c;
+  --danger:    #e89797;
+  --ok:        #a5c9a5;
+}
+
+.theme-contrast {
+  --bg:        #000;
+  --panel:     #0a0a0a;
+  --panel-2:   #141414;
+  --border:    #555;
+  --text:      #fff;
+  --text-dim:  #bbb;
+  --accent:    #fff;
+  --accent-2:  #ddd;
+  --accent-soft:#222;
+  --warning:   #ffcf66;
+  --danger:    #ff8a8a;
+  --ok:        #88e088;
+}
+
+/* ---- BASE ---- */
+html { font-family: system-ui, -apple-system, sans-serif; font-size: 15px; line-height: 1.55; color: var(--text); }
+body { max-width: 760px; margin: 0 auto; padding: 16px; background: var(--bg); }
+
+h1, h2, h3 { color: var(--text); font-weight: 500; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* ---- MOCKBAR (wireframe-only) ---- */
+.mockbar {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 10px;
+  font-size: 12px;
+  margin-bottom: 16px;
+  color: var(--text-dim);
+}
+.mockbar a { color: var(--text-dim); margin-right: 10px; }
+.mockbar strong { color: var(--text); }
+.mockbar .role { float: right; padding: 1px 8px; border: 1px solid var(--border); border-radius: 3px; font-size: 11px; background: var(--panel); color: var(--text-dim); }
+.mockbar .role.kid { color: var(--accent); border-color: var(--accent); }
+.mockbar .role.parent { color: var(--warning); border-color: var(--warning); }
+
+/* ---- ANNOTATIONS ---- */
+.note { font-style: italic; color: var(--text-dim); font-size: 13px; margin: 6px 0; padding-left: 8px; border-left: 2px solid var(--border); }
+
+/* ---- PANELS ---- */
+.panel { border: 1px solid var(--border); border-radius: 5px; padding: 14px; margin: 12px 0; background: var(--panel); }
+.panel h2 { margin-top: 0; font-size: 17px; }
+.panel h3 { font-size: 15px; margin-bottom: 6px; margin-top: 0; }
+
+/* ---- BUTTONS ---- */
+button, .btn {
+  font-family: inherit; font-size: 14px;
+  padding: 7px 14px; border: 1px solid var(--border); background: var(--panel-2); border-radius: 3px;
+  cursor: pointer; color: var(--text); text-decoration: none; display: inline-block;
+}
+.btn:hover { border-color: var(--accent); text-decoration: none; }
+.btn.primary { background: var(--accent-soft); border-color: var(--accent); color: var(--text); }
+.btn.primary:hover { background: var(--accent); color: var(--bg); }
+.btn.danger { color: var(--danger); border-color: var(--danger); }
+.btn.big { padding: 11px 20px; font-size: 15px; }
+
+/* ---- FORM ---- */
+input[type=text], input[type=password], input[type=date], input[type=number], textarea, select {
+  font-family: inherit; font-size: 14px; color: var(--text);
+  padding: 7px 10px; border: 1px solid var(--border); border-radius: 3px;
+  background: var(--bg); width: 100%; max-width: 420px;
+}
+textarea { width: 100%; max-width: 100%; min-height: 80px; }
+input:focus, textarea:focus, select:focus { outline: none; border-color: var(--accent); }
+label { display: block; font-size: 13px; color: var(--text-dim); margin: 10px 0 4px; }
+
+/* ---- CHAT ---- */
+.msg { padding: 10px 14px; margin: 8px 0; border-radius: 6px; border: 1px solid var(--border); }
+.msg.user { background: var(--accent-soft); }
+.msg.bot { background: var(--panel); }
+.msg.tool { background: var(--panel-2); font-size: 13px; color: var(--text-dim); font-family: ui-monospace, monospace; }
+.msg .who { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 4px; }
+
+/* ---- TABLE ---- */
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th, td { padding: 8px 10px; border-bottom: 1px solid var(--border); text-align: left; }
+th { font-size: 11px; color: var(--text-dim); text-transform: uppercase; font-weight: 500; letter-spacing: 0.05em; }
+
+/* ---- DOTS ---- */
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
+.dot.green { background: var(--ok); }
+.dot.amber { background: var(--warning); }
+.dot.red { background: var(--danger); }
+
+/* ---- NAV ---- */
+.nav { display: flex; gap: 18px; padding: 10px 0; border-bottom: 1px solid var(--border); margin-bottom: 16px; font-size: 14px; align-items: center; }
+.nav a { color: var(--text-dim); }
+.nav a:hover { color: var(--accent); text-decoration: none; }
+.nav .brand { font-weight: 600; color: var(--text); }
+.nav .spacer { flex-grow: 1; }
+
+/* ---- STATUS LINE (SSE) ---- */
+.status-line { font-family: ui-monospace, monospace; font-size: 13px; color: var(--text-dim); padding: 7px 12px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 3px; }
+
+/* ---- KID ACTION BUTTONS ---- */
+.action-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0; }
+.action-row .btn { font-size: 13px; padding: 9px 13px; }
+
+/* ---- CRISIS BANNER (kid persistent) ---- */
+.crisis-banner {
+  position: sticky; bottom: 0;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--danger);
+  padding: 10px 14px;
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-top: 16px;
+  border-radius: 3px;
+}
+.crisis-banner strong { color: var(--text); }
+
+/* ---- MOOD ---- */
+.mood-row { display: flex; align-items: center; gap: 14px; margin: 12px 0; }
+.mood-row input[type=range] { flex-grow: 1; max-width: 240px; accent-color: var(--accent); }
+.mood-row .val {
+  font-family: ui-monospace, monospace;
+  min-width: 36px; text-align: center;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  border-radius: 3px;
+}
+.mood-pill {
+  display: inline-block; padding: 1px 8px; border-radius: 10px;
+  background: var(--accent-soft); color: var(--accent); font-size: 12px; font-family: ui-monospace, monospace;
+  border: 1px solid var(--border);
+}
+
+/* ---- MEMORY DIFF (cleaner, no md refs) ---- */
+.diff-card {
+  border: 1px solid var(--border); border-radius: 4px;
+  padding: 14px; margin: 10px 0; background: var(--panel);
+}
+.diff-card .verb {
+  display: inline-block; padding: 2px 8px;
+  border: 1px solid var(--border); background: var(--panel-2); color: var(--text-dim);
+  border-radius: 10px; font-size: 11px; margin-right: 8px; text-transform: uppercase; letter-spacing: 0.05em;
+}
+.diff-card .verb.update { color: var(--warning); border-color: var(--warning); }
+.diff-card .verb.remove { color: var(--danger); border-color: var(--danger); }
+.diff-card .verb.add { color: var(--ok); border-color: var(--ok); }
+.diff-card h4 { margin: 6px 0; font-size: 14px; color: var(--text); }
+.diff-card .actions { margin-top: 10px; display: flex; gap: 8px; }
+
+/* ---- ENVELOPE (break-glass) ---- */
+.envelope {
+  border: 2px dashed var(--danger);
+  padding: 18px; background: var(--panel-2);
+  font-family: ui-monospace, monospace; font-size: 14px;
+  margin: 16px 0; color: var(--text); border-radius: 4px;
+}
+.envelope strong { color: var(--danger); }
+
+/* ---- TILES (admin home) ---- */
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin: 14px 0; }
+.tile {
+  border: 1px solid var(--border); background: var(--panel);
+  padding: 18px; border-radius: 5px; text-decoration: none; color: var(--text);
+  display: block;
+}
+.tile:hover { border-color: var(--accent); text-decoration: none; }
+.tile h3 { margin: 0 0 6px; color: var(--accent); }
+.tile p { margin: 0; color: var(--text-dim); font-size: 13px; }
+.tile .badge {
+  float: right; font-size: 11px; padding: 2px 7px;
+  background: var(--accent-soft); color: var(--accent);
+  border-radius: 10px; border: 1px solid var(--accent);
+}
+
+/* ---- STEP INDICATOR (setup) ---- */
+.steps { display: flex; gap: 4px; margin: 8px 0 24px; }
+.steps .step {
+  flex: 1; padding: 10px 12px; border-radius: 4px;
+  border: 1px solid var(--border); background: var(--panel);
+  color: var(--text-dim); font-size: 13px;
+}
+.steps .step.active { border-color: var(--accent); color: var(--text); background: var(--panel-2); }
+.steps .step.done { border-color: var(--ok); color: var(--ok); }
+.steps .step .num {
+  display: inline-block; width: 22px; height: 22px;
+  background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: 50%; text-align: center; line-height: 20px;
+  font-size: 12px; margin-right: 8px;
+}
+.steps .step.active .num { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+.steps .step.done .num { background: var(--ok); color: var(--bg); border-color: var(--ok); }
+
+/* ---- DROPZONE ---- */
+.dropzone {
+  border: 2px dashed var(--border); padding: 24px;
+  text-align: center; color: var(--text-dim);
+  border-radius: 5px; background: var(--panel-2);
+}
+
+/* ---- THEME SWATCHES ---- */
+.swatch-row { display: flex; gap: 12px; flex-wrap: wrap; }
+.swatch {
+  display: block; padding: 14px; border: 2px solid var(--border);
+  border-radius: 5px; min-width: 130px; text-align: center;
+  cursor: pointer; background: var(--panel);
+  text-decoration: none; color: var(--text);
+}
+.swatch.selected { border-color: var(--accent); }
+.swatch:hover { border-color: var(--accent); text-decoration: none; }
+.swatch .dot-row { display: flex; gap: 4px; justify-content: center; margin-bottom: 8px; }
+.swatch .dot-row span { width: 16px; height: 16px; border-radius: 50%; border: 1px solid var(--border); }
+
+footer { margin-top: 32px; padding-top: 12px; border-top: 1px solid var(--border); font-size: 12px; color: var(--text-dim); }
+footer a { color: var(--text-dim); }

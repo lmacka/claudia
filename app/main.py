@@ -1,0 +1,1238 @@
+"""
+FastAPI app for robo-therapist (simplified build).
+
+Single-user, LAN-only, basic-auth. Single mode, single model (Sonnet 4.6).
+Removed: tripwire/safety, session timers, modes/model toggle, bridge status,
+cost governor, /summary review page, commitments YAML, prometheus metrics,
+clean/dev cookie, prompt SHA tracking, per-session PDF export.
+
+Routes:
+  GET  /                          home
+  GET  /session/new               creates and redirects (no picker)
+  GET  /session/<id>              chat view
+  GET  /session/<id>/messages-poll  HTMX poll for opener
+  POST /session/<id>/message      user turn
+  POST /session/<id>/end          ends session, schedules audit
+  POST /session/<id>/mood         records regulation score
+  GET  /report                    handover report form
+  POST /report                    generates one-page PDF
+  GET  /connect-gmail / /oauth/callback
+  POST /upload, POST /session/<id>/paste
+  GET  /healthz, /readyz
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import secrets
+from contextlib import asynccontextmanager
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
+
+import structlog
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, status
+from fastapi.responses import (
+    HTMLResponse,
+    PlainTextResponse,
+    RedirectResponse,
+    Response,
+)
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+
+from app import config as config_module
+from app import google_auth
+from app import summariser as summariser_mod
+from app import tool_loop as tool_loop_mod
+from app.claude import SONNET, ClaudeClient, Usage
+from app.context import TZ as BRISBANE_TZ
+from app.context import ContextLoader
+from app.google_auth import GoogleAuthConfig
+from app.storage import (
+    InMemorySessionStore,
+    Message,
+    NFSSessionStore,
+    SessionHeader,
+    SessionStore,
+    new_session_id,
+)
+from app.tools import ToolRegistry
+from app.tools.calendar import (
+    create_calendar_event_spec,
+    list_calendar_events_spec,
+    update_calendar_event_spec,
+)
+from app.tools.documents import (
+    LIST_DOCUMENTS_SPEC,
+    READ_DOCUMENT_SPEC,
+    SEARCH_DOCUMENTS_SPEC,
+    rebuild_index,
+)
+from app.tools.gmail import (
+    create_gmail_draft_spec,
+    get_gmail_message_spec,
+    get_gmail_thread_spec,
+    propose_promote_upload_spec,
+    save_gmail_attachment_spec,
+    search_gmail_spec,
+)
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+
+structlog.configure(
+    processors=[
+        structlog.processors.add_log_level,
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.JSONRenderer(),
+    ],
+    wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
+)
+log = structlog.get_logger()
+
+
+# ---------------------------------------------------------------------------
+# App state
+# ---------------------------------------------------------------------------
+
+
+class AppState:
+    cfg: config_module.Config
+    store: SessionStore
+    loader: ContextLoader
+    claude: ClaudeClient | None
+    templates: Jinja2Templates
+    app_root: Path
+
+
+state = AppState()
+
+
+def _google_cfg(cfg: config_module.Config) -> GoogleAuthConfig:
+    return GoogleAuthConfig(
+        client_id=cfg.google_client_id,
+        client_secret=cfg.google_client_secret,
+        redirect_uri=cfg.google_redirect_uri,
+        token_path=cfg.data_root / ".credentials" / "google_oauth_token.json",
+    )
+
+
+def _build_tool_registry(cfg: config_module.Config, session_id: str | None = None) -> ToolRegistry:
+    reg = ToolRegistry()
+    reg.register(READ_DOCUMENT_SPEC(cfg.data_root))
+    reg.register(LIST_DOCUMENTS_SPEC(cfg.data_root))
+    reg.register(SEARCH_DOCUMENTS_SPEC(cfg.data_root))
+
+    gcfg = _google_cfg(cfg)
+    if gcfg.is_complete():
+        reg.register(search_gmail_spec(gcfg))
+        reg.register(get_gmail_thread_spec(gcfg))
+        reg.register(get_gmail_message_spec(gcfg))
+        reg.register(save_gmail_attachment_spec(gcfg, cfg.data_root))
+        reg.register(create_gmail_draft_spec(gcfg))
+        reg.register(list_calendar_events_spec(gcfg))
+        reg.register(create_calendar_event_spec(gcfg))
+        reg.register(update_calendar_event_spec(gcfg))
+        if session_id is not None:
+            def _append_event(kind: str, payload: dict) -> None:
+                state.store.append_event(session_id, kind, payload)
+            reg.register(propose_promote_upload_spec(cfg.data_root, _append_event))
+    return reg
+
+
+# ---------------------------------------------------------------------------
+# Lifespan
+# ---------------------------------------------------------------------------
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    cfg = config_module.load()
+    state.cfg = cfg
+    state.app_root = Path(__file__).resolve().parent
+
+    for sub in ("sessions", "session-logs", "uploads", "context", "session-exports", ".locks"):
+        (cfg.data_root / sub).mkdir(parents=True, exist_ok=True)
+
+    state.store = InMemorySessionStore() if cfg.is_local else NFSSessionStore(cfg.data_root)
+    state.loader = ContextLoader(cfg.data_root, cfg.prompts_dir)
+    state.claude = None if cfg.is_local else ClaudeClient(api_key=cfg.anthropic_api_key)
+
+    try:
+        rebuild_index(cfg.data_root)
+    except OSError as e:
+        log.warning("index.rebuild_failed_at_startup", error=str(e))
+
+    import time as _time
+
+    state.templates = Jinja2Templates(directory=str(state.app_root / "templates"))
+    state.templates.env.globals["asset_version"] = str(int(_time.time()))
+
+    log.info("app.startup", mode=cfg.mode, data_root=str(cfg.data_root))
+    yield
+    log.info("app.shutdown")
+
+
+app = FastAPI(title="robo-therapist", lifespan=lifespan)
+app.mount("/static", StaticFiles(directory=str(Path(__file__).resolve().parent / "static")), name="static")
+
+
+# ---------------------------------------------------------------------------
+# Basic auth
+# ---------------------------------------------------------------------------
+
+_basic_auth = HTTPBasic(realm="robo-therapist", auto_error=False)
+
+
+def require_auth(credentials: HTTPBasicCredentials | None = Depends(_basic_auth)) -> str:
+    cfg = state.cfg
+    if cfg.is_local:
+        return "liam"
+    if credentials is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized",
+            headers={"WWW-Authenticate": 'Basic realm="robo-therapist"'},
+        )
+    user_ok = secrets.compare_digest(credentials.username, cfg.basic_auth_user)
+    pw_ok = secrets.compare_digest(credentials.password, cfg.basic_auth_password)
+    if not (user_ok and pw_ok):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized",
+            headers={"WWW-Authenticate": 'Basic realm="robo-therapist"'},
+        )
+    return credentials.username
+
+
+# ---------------------------------------------------------------------------
+# Health (no auth)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/healthz", response_class=PlainTextResponse)
+async def healthz() -> str:
+    return "ok"
+
+
+@app.get("/metrics", response_class=PlainTextResponse)
+async def metrics() -> str:
+    """Stub kept so the existing Prometheus ServiceMonitor scrape doesn't 404.
+    All app metrics were removed in the simplify pass — Liam reads pod logs."""
+    return "# robo-therapist metrics removed\n"
+
+
+@app.get("/readyz", response_class=PlainTextResponse)
+async def readyz() -> Response:
+    healthcheck_path = state.cfg.data_root / ".healthcheck"
+    try:
+        healthcheck_path.write_text(datetime.now(timezone.utc).isoformat())
+    except OSError as e:
+        log.error("readyz.write_failed", error=str(e))
+        return PlainTextResponse("fail", status_code=503)
+    return PlainTextResponse("ready")
+
+
+# ---------------------------------------------------------------------------
+# Home
+# ---------------------------------------------------------------------------
+
+
+@app.get("/", response_class=HTMLResponse)
+async def home(request: Request, _: str = Depends(require_auth)) -> HTMLResponse:
+    sessions = state.store.list_sessions()
+    active = state.store.active_session()
+    mood_line = _mood_sparkline(state.cfg.data_root)
+    mood_by_session = _mood_by_session(state.cfg.data_root)
+    session_rows = [
+        {
+            "session_id": s.session_id,
+            "label": s.title or _brisbane_label(s.created_at),
+            "mood": mood_by_session.get(s.session_id),
+        }
+        for s in sessions
+    ]
+    active_row = None
+    if active:
+        active_row = {
+            "session_id": active.session_id,
+            "label": _brisbane_label(active.created_at),
+        }
+    return state.templates.TemplateResponse(
+        request,
+        "home.html",
+        {
+            "sessions": session_rows,
+            "active": active_row,
+            "mood_sparkline": mood_line,
+        },
+    )
+
+
+def _brisbane_label(iso_ts: str) -> str:
+    """Render an ISO 8601 timestamp as a friendly Brisbane (AEST, UTC+10) string."""
+    try:
+        dt = datetime.fromisoformat(iso_ts.replace("Z", "+00:00"))
+        return dt.astimezone(BRISBANE_TZ).strftime("%a %d %b %H:%M")
+    except (ValueError, TypeError, AttributeError):
+        return (iso_ts or "")[:16]
+
+
+def _mood_by_session(data_root: Path) -> dict[str, int]:
+    """Map session_id -> last regulation_score recorded for that session."""
+    p = data_root / "context" / "mood-log.jsonl"
+    out: dict[str, int] = {}
+    if not p.exists():
+        return out
+    try:
+        for line in p.read_text(encoding="utf-8").splitlines():
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            sid = rec.get("session")
+            score = rec.get("regulation_score")
+            if isinstance(sid, str) and isinstance(score, int):
+                out[sid] = score
+    except OSError:
+        pass
+    return out
+
+
+def _mood_sparkline(data_root: Path) -> str | None:
+    p = data_root / "context" / "mood-log.jsonl"
+    if not p.exists():
+        return None
+    scores: list[int] = []
+    try:
+        for line in p.read_text(encoding="utf-8").splitlines():
+            try:
+                r = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            s = r.get("regulation_score")
+            if isinstance(s, int) and 1 <= s <= 10:
+                scores.append(s)
+    except OSError:
+        return None
+    if not scores:
+        return None
+    scores = scores[-20:]
+    glyphs = "▁▂▃▄▅▆▇█"
+    return "".join(glyphs[min(7, max(0, (s - 1) * 7 // 9))] for s in scores) + f"  ({scores[-1]}/10)"
+
+
+# ---------------------------------------------------------------------------
+# Sessions
+# ---------------------------------------------------------------------------
+
+
+@app.get("/session/new")
+async def session_new(
+    background_tasks: BackgroundTasks, _: str = Depends(require_auth)
+) -> RedirectResponse:
+    """No picker. Create a session and redirect to it."""
+    if state.store.active_session():
+        return RedirectResponse("/", status_code=303)
+
+    blocks = state.loader.assemble()
+    session_id = new_session_id("session")
+    header = SessionHeader(
+        session_id=session_id,
+        created_at=datetime.now(timezone.utc).isoformat(),
+        mode="session",
+        model=SONNET,
+        prompt_sha="",
+    )
+    state.store.create_session(header)
+    state.store.append_event(session_id, "session_started", {"model": SONNET})
+
+    if not state.cfg.is_local:
+        background_tasks.add_task(_seed_opener_safe, session_id, SONNET, blocks)
+
+    return RedirectResponse(f"/session/{session_id}", status_code=303)
+
+
+def _seed_opener_safe(session_id: str, model: str, blocks) -> None:
+    try:
+        _seed_opener(session_id, model, blocks)
+    except Exception as e:  # noqa: BLE001
+        log.warning("session.opener_failed", session_id=session_id, error=str(e))
+        try:
+            state.store.append_event(session_id, "opener_failed", {"error": str(e)})
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _seed_opener(session_id: str, model: str, blocks) -> None:
+    assert state.claude is not None
+    synthetic_user = "Begin the session."
+    state.store.append_message(
+        session_id,
+        Message(
+            role="user",
+            content="",
+            meta={
+                "blocks": [{"type": "text", "text": synthetic_user}],
+                "is_synthetic_opener": True,
+            },
+        ),
+    )
+    history = [{"role": "user", "content": synthetic_user}]
+    tools_reg = _build_tool_registry(state.cfg, session_id=session_id)
+    result = tool_loop_mod.run_tool_loop(
+        claude=state.claude,
+        model=model,
+        blocks=blocks,
+        history=history,
+        tools=tools_reg,
+    )
+    _persist_turns_to_store(
+        session_id=session_id,
+        local_mode=False,
+        loop_result=result,
+        fallback_text=result.text or "What's on your mind?",
+    )
+
+
+@app.get("/session/{session_id}", response_class=HTMLResponse)
+async def session_view(session_id: str, request: Request, _: str = Depends(require_auth)) -> HTMLResponse:
+    try:
+        header = state.store.load_header(session_id)
+    except FileNotFoundError:
+        raise HTTPException(404, "Session not found")
+    messages = state.store.load_messages(session_id)
+    opener_expected = not state.cfg.is_local
+    return state.templates.TemplateResponse(
+        request,
+        "session_chat.html",
+        {
+            "header": header,
+            "messages": messages,
+            "opener_expected": opener_expected,
+        },
+    )
+
+
+def _has_visible_messages(session_id: str) -> bool:
+    try:
+        for m in state.store.load_messages(session_id):
+            if m.content and m.content.strip():
+                return True
+    except (FileNotFoundError, ValueError):
+        pass
+    return False
+
+
+@app.get("/session/{session_id}/messages-poll", response_class=HTMLResponse)
+async def session_messages_poll(
+    session_id: str, request: Request, _: str = Depends(require_auth)
+) -> HTMLResponse:
+    try:
+        state.store.load_header(session_id)
+    except FileNotFoundError:
+        raise HTTPException(404, "Session not found")
+
+    poll_url = f"/session/{session_id}/messages-poll"
+    if _has_visible_messages(session_id):
+        messages = state.store.load_messages(session_id)
+        return state.templates.TemplateResponse(
+            request,
+            "fragments/messages_list.html",
+            {"messages": messages, "polling": False, "poll_url": poll_url},
+        )
+    if _event_present(session_id, "opener_failed"):
+        return state.templates.TemplateResponse(
+            request,
+            "fragments/messages_list.html",
+            {"messages": [], "polling": False, "opener_failed": True, "poll_url": poll_url},
+        )
+    return state.templates.TemplateResponse(
+        request,
+        "fragments/messages_list.html",
+        {"messages": [], "polling": True, "poll_url": poll_url},
+    )
+
+
+@app.post("/session/{session_id}/message", response_class=HTMLResponse)
+async def session_message(
+    session_id: str,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    _: str = Depends(require_auth),
+) -> HTMLResponse:
+    try:
+        header = state.store.load_header(session_id)
+    except FileNotFoundError:
+        raise HTTPException(404, "Session not found")
+    if header.status != "active":
+        raise HTTPException(410, "Session is ended")
+
+    form = await request.form()
+    user_text = str(form.get("content", "")).strip()
+    if not user_text:
+        return HTMLResponse("", status_code=204)
+
+    state.store.append_message(session_id, Message(role="user", content=user_text))
+    blocks = state.loader.assemble()
+
+    if state.cfg.is_local:
+        reply_text = f"[local mock reply] heard: {user_text[:120]!r}"
+        result = None
+    else:
+        assert state.claude is not None
+        history: list[dict] = []
+        for m in state.store.load_messages(session_id):
+            if m.role not in ("user", "assistant"):
+                continue
+            raw_blocks = m.meta.get("blocks") if m.meta else None
+            if raw_blocks:
+                history.append({"role": m.role, "content": raw_blocks})
+            else:
+                history.append({"role": m.role, "content": m.content})
+        tools_reg = _build_tool_registry(state.cfg, session_id=session_id)
+        result = await asyncio.to_thread(
+            tool_loop_mod.run_tool_loop,
+            state.claude,
+            header.model or SONNET,
+            blocks,
+            history,
+            tools_reg,
+        )
+        reply_text = result.text or "(no response)"
+        for tc in result.tool_calls:
+            state.store.append_event(
+                session_id,
+                "tool_call",
+                {"name": tc.name, "arguments": tc.arguments, "summary": tc.result_summary[:200]},
+            )
+
+    assistant_msg = _persist_turns_to_store(
+        session_id=session_id,
+        local_mode=state.cfg.is_local,
+        loop_result=result if not state.cfg.is_local else None,
+        fallback_text=reply_text,
+    )
+
+    return state.templates.TemplateResponse(
+        request,
+        "fragments/message_pair.html",
+        {
+            "user_message": Message(role="user", content=user_text),
+            "assistant_message": assistant_msg,
+            "session_ended": False,
+            "header": header,
+        },
+    )
+
+
+@app.post("/session/{session_id}/end")
+async def session_end(
+    session_id: str,
+    background_tasks: BackgroundTasks,
+    _: str = Depends(require_auth),
+) -> RedirectResponse:
+    try:
+        header = state.store.load_header(session_id)
+    except FileNotFoundError:
+        raise HTTPException(404)
+    if header.status != "active":
+        return RedirectResponse("/", status_code=303)
+    state.store.update_header(
+        session_id,
+        status="ended",
+        ended_at=datetime.now(timezone.utc).isoformat(),
+    )
+    state.store.append_event(session_id, "session_ended", {})
+    log.info("session.ended", session_id=session_id)
+    background_tasks.add_task(_run_audit_and_apply, session_id)
+    return RedirectResponse(f"/session/{session_id}", status_code=303)
+
+
+@app.post("/session/{session_id}/mood", response_class=HTMLResponse)
+async def session_mood(
+    session_id: str, request: Request, _: str = Depends(require_auth)
+) -> Response:
+    try:
+        header = state.store.load_header(session_id)
+    except FileNotFoundError:
+        raise HTTPException(404, "Session not found")
+    form = await request.form()
+    try:
+        score = int(str(form.get("regulation_score") or "").strip())
+    except (ValueError, TypeError):
+        raise HTTPException(400, "regulation_score must be an integer 1-10")
+    if not (1 <= score <= 10):
+        raise HTTPException(400, "regulation_score must be 1-10")
+
+    if not _event_present(session_id, "mood_recorded"):
+        session_ts = header.ended_at or header.created_at
+        _append_mood(state.cfg.data_root, session_id, regulation_score=score, ts=session_ts)
+        state.store.append_event(session_id, "mood_recorded", {"score": score})
+
+    # Return a tiny acknowledgement that swaps in for the form.
+    return HTMLResponse(
+        f'<section id="msg-form" class="mood-end-panel">'
+        f'<p>Recorded <strong>{score}/10</strong>.</p>'
+        f'<a href="/" role="button" class="primary">Done</a>'
+        f"</section>"
+    )
+
+
+def _append_mood(data_root: Path, session_id: str, regulation_score: int, ts: str | None = None) -> None:
+    p = data_root / "context" / "mood-log.jsonl"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    entry = {
+        "ts": ts or datetime.now(timezone.utc).isoformat(),
+        "session": session_id,
+        "regulation_score": regulation_score,
+    }
+    with p.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(entry) + "\n")
+
+
+# ---------------------------------------------------------------------------
+# Auditor (background)
+# ---------------------------------------------------------------------------
+
+
+def _event_present(session_id: str, event_type: str) -> bool:
+    if isinstance(state.store, NFSSessionStore):
+        path = state.store.sessions_dir / f"{session_id}.jsonl"
+        if not path.exists():
+            return False
+        for line in path.read_text(encoding="utf-8").splitlines():
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if rec.get("type") == "event" and rec.get("event_type") == event_type:
+                return True
+        return False
+    if hasattr(state.store, "_events"):
+        for kind, _payload in state.store._events.get(session_id, []):  # type: ignore[attr-defined]
+            if kind == event_type:
+                return True
+    return False
+
+
+def _run_audit_and_apply(session_id: str) -> None:
+    """Background-task: run auditor, write session-log + current_state + app-feedback."""
+    if _event_present(session_id, "audit_applied"):
+        return
+    state.store.append_event(session_id, "audit_scheduled", {})
+    try:
+        header = state.store.load_header(session_id)
+    except (FileNotFoundError, ValueError) as e:
+        log.error("audit.header_missing", session_id=session_id, error=str(e))
+        return
+
+    ctx_dir = state.cfg.data_root / "context"
+    current_state = (
+        (ctx_dir / "05_current_state.md").read_text(encoding="utf-8")
+        if (ctx_dir / "05_current_state.md").exists()
+        else ""
+    )
+    logs_dir = state.cfg.data_root / "session-logs"
+    log_tails = ""
+    if logs_dir.exists():
+        files = sorted(logs_dir.glob("*.md"), reverse=True)[:3]
+        parts = []
+        for f in files:
+            try:
+                parts.append(f"### {f.stem}\n{f.read_text(encoding='utf-8')[-2048:]}")
+            except OSError:
+                continue
+        log_tails = "\n\n".join(parts)
+
+    try:
+        messages = state.store.load_messages(session_id)
+    except (FileNotFoundError, ValueError) as e:
+        log.error("audit.messages_missing", session_id=session_id, error=str(e))
+        return
+
+    inp = summariser_mod.SummariserInput(
+        session_id=session_id,
+        messages=messages,
+        current_state=current_state,
+        recent_session_logs=log_tails,
+    )
+    try:
+        if state.cfg.is_local:
+            report = summariser_mod.mock_auditor_report(inp)
+        else:
+            assert state.claude is not None
+            report = summariser_mod.run_auditor(state.claude, state.cfg.prompts_dir, header.model or SONNET, inp)
+    except summariser_mod.AuditorError as e:
+        log.error("audit.failed", session_id=session_id, error=str(e))
+        state.store.append_event(session_id, "auditor_failed", {"error": str(e)})
+        return
+
+    # Persist + apply
+    if report.summary_markdown.strip():
+        try:
+            path = summariser_mod.write_session_log(
+                state.cfg.data_root, session_id, report.title, report.summary_markdown
+            )
+            state.store.append_event(session_id, "session_log_written", {"path": str(path)})
+        except OSError as e:
+            log.error("audit.session_log_failed", session_id=session_id, error=str(e))
+
+    if report.current_state_proposed.strip():
+        try:
+            summariser_mod.write_current_state(state.cfg.data_root, report.current_state_proposed)
+            state.store.append_event(session_id, "current_state_updated", {})
+        except OSError as e:
+            log.error("audit.current_state_failed", session_id=session_id, error=str(e))
+
+    if report.app_feedback:
+        try:
+            path = summariser_mod.append_app_feedback(state.cfg.data_root, session_id, report.app_feedback)
+            if path:
+                state.store.append_event(
+                    session_id, "app_feedback_recorded", {"path": str(path), "count": len(report.app_feedback)}
+                )
+        except OSError as e:
+            log.error("audit.app_feedback_failed", session_id=session_id, error=str(e))
+
+    state.store.append_event(session_id, "audit_applied", {})
+
+
+# ---------------------------------------------------------------------------
+# Report (therapist handover)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/report", response_class=HTMLResponse)
+async def report_form(request: Request, _: str = Depends(require_auth)) -> HTMLResponse:
+    last_export_ts = _read_last_export_ts(state.cfg.data_root)
+    today = date.today()
+    default_start = last_export_ts.date() if last_export_ts else (today - timedelta(days=30))
+    return state.templates.TemplateResponse(
+        request,
+        "report.html",
+        {
+            "default_start": default_start.isoformat(),
+            "default_end": today.isoformat(),
+            "last_export": last_export_ts.isoformat() if last_export_ts else None,
+        },
+    )
+
+
+@app.post("/report")
+async def report_submit(request: Request, _: str = Depends(require_auth)) -> Response:
+    from fastapi.responses import FileResponse
+
+    form = await request.form()
+    try:
+        start = date.fromisoformat(str(form.get("start_date", "")).strip())
+        end = date.fromisoformat(str(form.get("end_date", "")).strip())
+    except ValueError:
+        raise HTTPException(400, "Invalid date — use YYYY-MM-DD")
+    if end < start:
+        raise HTTPException(400, "end_date must be on or after start_date")
+
+    bundle = _collect_for_report(state.cfg.data_root, start, end)
+    if not bundle["transcripts"]:
+        raise HTTPException(404, "No sessions found in that date range")
+
+    if state.cfg.is_local:
+        markdown = _mock_handover_markdown(start, end, bundle["session_count"], bundle["mood_entries"])
+    else:
+        assert state.claude is not None
+        markdown = await asyncio.to_thread(
+            _run_handover_call,
+            state.claude,
+            state.cfg.prompts_dir,
+            start,
+            end,
+            bundle,
+        )
+
+    pdf_path = _render_handover_pdf(state.cfg.data_root, start, end, markdown)
+    _write_last_export_ts(state.cfg.data_root, datetime.now(timezone.utc))
+    return FileResponse(path=str(pdf_path), filename=pdf_path.name, media_type="application/pdf")
+
+
+def _read_last_export_ts(data_root: Path) -> datetime | None:
+    p = data_root / "session-exports" / ".last_export.json"
+    if not p.exists():
+        return None
+    try:
+        rec = json.loads(p.read_text(encoding="utf-8"))
+        return datetime.fromisoformat(rec["ts"])
+    except (OSError, ValueError, KeyError, json.JSONDecodeError):
+        return None
+
+
+def _write_last_export_ts(data_root: Path, ts: datetime) -> None:
+    p = data_root / "session-exports" / ".last_export.json"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps({"ts": ts.isoformat()}), encoding="utf-8")
+
+
+def _collect_for_report(data_root: Path, start: date, end: date) -> dict:
+    """Return a bundle of inputs for the handover call:
+        transcripts, session_count, mood_entries, spine, session_logs
+
+    `spine` is the factual ground truth (current_state + patterns + relationship
+    map + background) — needed so the handover model can attribute actions
+    correctly. Without it, the model has no idea who's who and confabulates.
+
+    `session_logs` is the auditor's already-summarised version of each session
+    in range — preferred over raw transcripts for narrative facts, and disambiguates
+    referents the raw chat assumes both speakers share.
+    """
+    sessions_dir = data_root / "sessions"
+    transcripts_blocks: list[str] = []
+    count = 0
+    if sessions_dir.exists():
+        for path in sorted(sessions_dir.glob("*.jsonl")):
+            if ".bak-" in path.name:
+                continue
+            try:
+                created: datetime | None = None
+                lines: list[str] = []
+                with path.open("r", encoding="utf-8") as fh:
+                    for raw in fh:
+                        try:
+                            rec = json.loads(raw)
+                        except json.JSONDecodeError:
+                            continue
+                        rtype = rec.get("type")
+                        if rtype == "header" and not created:
+                            ts = rec.get("created_at")
+                            if ts:
+                                try:
+                                    created = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                                except ValueError:
+                                    created = None
+                        elif rtype == "message":
+                            role = rec.get("role")
+                            content = (rec.get("content") or "").strip()
+                            if role not in ("user", "assistant") or not content:
+                                continue
+                            meta = rec.get("meta") or {}
+                            if meta.get("is_synthetic_opener"):
+                                continue
+                            label = "LIAM" if role == "user" else "COMPANION"
+                            lines.append(f"{label}: {content}")
+                if created is None:
+                    continue
+                d = created.date()
+                if d < start or d > end:
+                    continue
+                count += 1
+                transcripts_blocks.append(
+                    f"## Session {path.stem} ({d.isoformat()})\n\n" + "\n\n".join(lines)
+                )
+            except OSError:
+                continue
+
+    # Mood entries in range
+    mood_entries: list[dict] = []
+    mood_path = data_root / "context" / "mood-log.jsonl"
+    if mood_path.exists():
+        try:
+            for line in mood_path.read_text(encoding="utf-8").splitlines():
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                ts = rec.get("ts", "")
+                try:
+                    d = datetime.fromisoformat(ts.replace("Z", "+00:00")).date()
+                except ValueError:
+                    continue
+                if start <= d <= end:
+                    mood_entries.append(rec)
+        except OSError:
+            pass
+
+    # Factual spine — ground truth for who's who and what happened previously.
+    ctx_dir = data_root / "context"
+    spine_files = [
+        ("01_background.md", "Background"),
+        ("02_patterns.md", "Patterns"),
+        ("04_relationship_map.md", "Relationship map"),
+        ("05_current_state.md", "Current state"),
+    ]
+    spine_parts: list[str] = []
+    for fname, label in spine_files:
+        p = ctx_dir / fname
+        if p.exists():
+            try:
+                content = p.read_text(encoding="utf-8").strip()
+                if content:
+                    spine_parts.append(f"## {label} ({fname})\n\n{content}")
+            except OSError:
+                continue
+    spine = "\n\n---\n\n".join(spine_parts)
+
+    # Session-log markdown files whose YYYY-MM-DD prefix falls in range.
+    logs_dir = data_root / "session-logs"
+    log_blocks: list[str] = []
+    if logs_dir.exists():
+        for p in sorted(logs_dir.glob("*.md")):
+            stem = p.stem
+            try:
+                log_date = date.fromisoformat(stem[:10])
+            except ValueError:
+                continue
+            if log_date < start or log_date > end:
+                continue
+            try:
+                log_blocks.append(f"## {stem}\n\n{p.read_text(encoding='utf-8').strip()}")
+            except OSError:
+                continue
+    session_logs = "\n\n---\n\n".join(log_blocks)
+
+    return {
+        "transcripts": "\n\n---\n\n".join(transcripts_blocks),
+        "session_count": count,
+        "mood_entries": mood_entries,
+        "spine": spine,
+        "session_logs": session_logs,
+    }
+
+
+def _run_handover_call(
+    claude: ClaudeClient,
+    prompts_dir: Path,
+    start: date,
+    end: date,
+    bundle: dict,
+) -> str:
+    system = (prompts_dir / "handover.md").read_text(encoding="utf-8")
+    mood_summary = _summarise_mood(bundle["mood_entries"])
+    user_msg = (
+        f"# Date range\n{start.isoformat()} to {end.isoformat()}\n\n"
+        f"# Mood log entries (in range)\n{mood_summary}\n\n"
+        "# FACTUAL SPINE — ground truth\n"
+        "These files are the source of truth for who's who and what happened. "
+        "When attributing actions, defer to this spine. Never guess.\n\n"
+        f"{bundle['spine']}\n\n"
+        "---\n\n"
+        "# Session-log summaries (auditor-written, in range)\n"
+        "Already-summarised version of each session. Use these as your structured base.\n\n"
+        f"{bundle['session_logs'] or '(no session-logs in range)'}\n\n"
+        "---\n\n"
+        "# Raw session transcripts (in range)\n"
+        "Verbatim chat. Useful for quotes and for what *Liam said in the moment*. "
+        "Treat referents as ambiguous when not made explicit — defer to the spine.\n\n"
+        f"{bundle['transcripts']}\n\n"
+        "Produce the handover markdown per your system prompt. One A4 page."
+    )
+    raw = claude._c.messages.create(  # noqa: SLF001
+        model=SONNET,
+        max_tokens=2048,
+        system=[{"type": "text", "text": system}],
+        messages=[{"role": "user", "content": user_msg}],
+    )
+    parts = [b.text for b in raw.content if hasattr(b, "text")]
+    return "\n\n".join(parts).strip()
+
+
+def _summarise_mood(entries: list[dict]) -> str:
+    if not entries:
+        return "(no mood entries in range)"
+    scores = [int(e["regulation_score"]) for e in entries if isinstance(e.get("regulation_score"), int)]
+    if not scores:
+        return "(entries present but no valid scores)"
+    return (
+        f"n={len(scores)}, first={scores[0]}, last={scores[-1]}, "
+        f"min={min(scores)}, max={max(scores)}, mean={sum(scores)/len(scores):.1f}"
+    )
+
+
+def _mock_handover_markdown(start: date, end: date, n: int, mood_entries: list[dict]) -> str:
+    return (
+        f"# Handover — {start.isoformat()} to {end.isoformat()}\n\n"
+        f"**Sessions:** {n}  ·  **Mood:** {_summarise_mood(mood_entries)}\n\n"
+        "## Themes\n- (mock — no model in local mode)\n\n"
+        "## Notable events\n- (mock)\n\n"
+        "## Action items / commitments named\n- (mock)\n\n"
+        "## Risk / safety notes\n(none)\n\n"
+        "## Open questions for next appointment\n- (mock)\n"
+    )
+
+
+def _render_handover_pdf(data_root: Path, start: date, end: date, markdown: str) -> Path:
+    """Render the markdown string to a one-page A4 PDF using ReportLab."""
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+    from reportlab.lib.units import cm
+    from reportlab.platypus import HRFlowable, Paragraph, SimpleDocTemplate, Spacer
+
+    out_dir = data_root / "session-exports"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"handover_{start.isoformat()}_to_{end.isoformat()}.pdf"
+
+    doc = SimpleDocTemplate(
+        str(out_path),
+        pagesize=A4,
+        topMargin=1.6 * cm,
+        bottomMargin=1.6 * cm,
+        leftMargin=2 * cm,
+        rightMargin=2 * cm,
+        title="Handover note",
+    )
+    styles = getSampleStyleSheet()
+    h1 = ParagraphStyle("h1", parent=styles["Heading1"], fontSize=14, spaceAfter=4)
+    h2 = ParagraphStyle("h2", parent=styles["Heading2"], fontSize=11, spaceBefore=6, spaceAfter=2)
+    body = ParagraphStyle("body", parent=styles["BodyText"], fontSize=9.5, leading=12)
+    bullet = ParagraphStyle("bullet", parent=body, leftIndent=10, bulletIndent=0)
+
+    flow = []
+    for kind, content in _md_blocks(markdown):
+        if kind == "h1":
+            flow.append(Paragraph(_esc(content), h1))
+            flow.append(HRFlowable(color="#999", thickness=0.5, spaceAfter=4))
+        elif kind == "h2":
+            flow.append(Paragraph(_esc(content), h2))
+        elif kind == "bullet":
+            flow.append(Paragraph(f"• {_esc(content)}", bullet))
+        elif kind == "para":
+            flow.append(Paragraph(_esc(content), body))
+        elif kind == "blank":
+            flow.append(Spacer(1, 3))
+    doc.build(flow)
+    return out_path
+
+
+def _esc(s: str) -> str:
+    """Escape for ReportLab Paragraph, then convert markdown **bold** and
+    *italic* into the inline HTML ReportLab understands (`<b>`/`<i>`).
+    Order: HTML-escape first so the user content can't smuggle tags."""
+    import re
+
+    s = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    s = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", s)
+    s = re.sub(r"(?<![*\w])\*([^*\n]+?)\*(?!\w)", r"<i>\1</i>", s)
+    return s
+
+
+def _md_blocks(text: str):
+    buf: list[str] = []
+
+    def flush():
+        if buf:
+            yield ("para", " ".join(buf).strip())
+            buf.clear()
+
+    for line in text.splitlines():
+        s = line.strip()
+        if not s:
+            yield from flush()
+            yield ("blank", "")
+        elif s.startswith("# "):
+            yield from flush()
+            yield ("h1", s[2:])
+        elif s.startswith("## "):
+            yield from flush()
+            yield ("h2", s[3:])
+        elif s.startswith("- ") or s.startswith("* "):
+            yield from flush()
+            yield ("bullet", s[2:])
+        else:
+            buf.append(s)
+    yield from flush()
+
+
+# ---------------------------------------------------------------------------
+# Google OAuth
+# ---------------------------------------------------------------------------
+
+
+@app.get("/connect-gmail", response_class=HTMLResponse)
+async def connect_gmail(request: Request, _: str = Depends(require_auth)) -> HTMLResponse:
+    gcfg = _google_cfg(state.cfg)
+    if not gcfg.is_complete():
+        return state.templates.TemplateResponse(
+            request, "connect_gmail.html", {"variant": "config_missing"}, status_code=500
+        )
+    stat = google_auth.status(gcfg)
+    if stat["state"] == "connected":
+        return state.templates.TemplateResponse(
+            request, "connect_gmail.html", {"variant": "connected", "scopes": stat.get("scopes", [])}
+        )
+    auth_url, _s = google_auth.begin_flow(gcfg)
+    return state.templates.TemplateResponse(
+        request, "connect_gmail.html", {"variant": "connect", "auth_url": auth_url}
+    )
+
+
+@app.get("/connect-gmail/disconnect")
+async def connect_gmail_disconnect(_: str = Depends(require_auth)) -> RedirectResponse:
+    google_auth.revoke(_google_cfg(state.cfg))
+    return RedirectResponse("/", status_code=303)
+
+
+@app.get("/oauth/callback")
+async def oauth_callback(request: Request, _: str = Depends(require_auth)) -> HTMLResponse:
+    code = request.query_params.get("code")
+    returned_state = request.query_params.get("state")
+    error = request.query_params.get("error")
+    if error:
+        return state.templates.TemplateResponse(
+            request, "connect_gmail.html", {"variant": "callback_error", "error": error}, status_code=400
+        )
+    if not code or not returned_state:
+        return state.templates.TemplateResponse(
+            request,
+            "connect_gmail.html",
+            {"variant": "callback_error", "error": "Missing code or state"},
+            status_code=400,
+        )
+    gcfg = _google_cfg(state.cfg)
+    try:
+        google_auth.exchange_code(gcfg, code, returned_state)
+    except Exception as e:  # noqa: BLE001
+        log.exception("oauth.exchange_failed")
+        return state.templates.TemplateResponse(
+            request, "connect_gmail.html", {"variant": "callback_error", "error": str(e)}, status_code=500
+        )
+    return state.templates.TemplateResponse(request, "connect_gmail.html", {"variant": "callback_ok"})
+
+
+# ---------------------------------------------------------------------------
+# Uploads + paste
+# ---------------------------------------------------------------------------
+
+_MIME_TO_SUBDIR = {
+    "application/pdf": "pdfs",
+    "image/png": "images",
+    "image/jpeg": "images",
+    "image/jpg": "images",
+    "image/gif": "images",
+    "image/webp": "images",
+    "message/rfc822": "emails",
+    "text/plain": "pastes",
+    "text/markdown": "pastes",
+}
+_MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+
+
+def _safe_filename(name: str) -> str:
+    import re
+
+    name = name.strip().replace("\x00", "")
+    name = re.sub(r"[^A-Za-z0-9._-]+", "-", name)
+    name = name.strip("-.")
+    return name[:120] or "upload"
+
+
+@app.post("/upload")
+async def upload(request: Request, _: str = Depends(require_auth)) -> Response:
+    from fastapi import UploadFile
+
+    form = await request.form()
+    upload_obj = form.get("file")
+    if not hasattr(upload_obj, "filename") or not upload_obj.filename:  # type: ignore[union-attr]
+        return Response(content=json.dumps({"error": "no file field"}), status_code=400, media_type="application/json")
+    file: UploadFile = upload_obj  # type: ignore[assignment]
+    content_type = file.content_type or "application/octet-stream"
+    subdir = _MIME_TO_SUBDIR.get(content_type, "files")
+
+    data = await file.read()
+    if len(data) > _MAX_UPLOAD_BYTES:
+        return Response(
+            content=json.dumps({"error": f"file too large (max {_MAX_UPLOAD_BYTES} bytes)"}),
+            status_code=413,
+            media_type="application/json",
+        )
+
+    dest_dir = state.cfg.data_root / "uploads" / subdir
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
+    filename = f"{ts}_{_safe_filename(file.filename)}"
+    dest = dest_dir / filename
+    dest.write_bytes(data)
+    try:
+        rebuild_index(state.cfg.data_root)
+    except OSError as e:
+        log.warning("upload.index_rebuild_failed", error=str(e))
+    rel = str(dest.relative_to(state.cfg.data_root))
+    return Response(
+        content=json.dumps({"path": rel, "size": len(data), "mime": content_type}),
+        media_type="application/json",
+    )
+
+
+@app.post("/session/{session_id}/paste")
+async def session_paste(session_id: str, request: Request, _: str = Depends(require_auth)) -> Response:
+    try:
+        state.store.load_header(session_id)
+    except FileNotFoundError:
+        raise HTTPException(404)
+    form = await request.form()
+    content = str(form.get("content", "")).strip()
+    if not content:
+        return Response(status_code=400, content="empty paste")
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
+    label = _safe_filename(str(form.get("label", "paste")))
+    dest_dir = state.cfg.data_root / "uploads" / "pastes"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / f"{ts}_{label}.txt"
+    dest.write_text(content, encoding="utf-8")
+    try:
+        rebuild_index(state.cfg.data_root)
+    except OSError:
+        pass
+    state.store.append_event(
+        session_id, "paste_saved", {"path": str(dest.relative_to(state.cfg.data_root))}
+    )
+    return Response(
+        content=json.dumps({"path": str(dest.relative_to(state.cfg.data_root))}),
+        media_type="application/json",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _persist_turns_to_store(
+    session_id: str, local_mode: bool, loop_result, fallback_text: str
+) -> Message:
+    if local_mode or loop_result is None:
+        msg = Message(role="assistant", content=fallback_text)
+        state.store.append_message(session_id, msg)
+        return msg
+
+    turns_list = loop_result.turns or []
+    if not turns_list:
+        msg = Message(role="assistant", content=fallback_text)
+        state.store.append_message(session_id, msg)
+        return msg
+
+    def _extract_text(blocks: list) -> str:
+        parts = [b.get("text", "") for b in blocks if isinstance(b, dict) and b.get("type") == "text"]
+        return "\n\n".join(p for p in parts if p).strip()
+
+    final_msg: Message | None = None
+    for t in turns_list:
+        if t.role == "assistant":
+            text = _extract_text(t.blocks)
+            msg = Message(role=t.role, content=text, meta={"blocks": t.blocks})
+        else:
+            msg = Message(role=t.role, content="", meta={"blocks": t.blocks})
+        state.store.append_message(session_id, msg)
+        if t.role == "assistant":
+            final_msg = msg
+    if final_msg is None:
+        final_msg = Message(role="assistant", content=fallback_text)
+        state.store.append_message(session_id, final_msg)
+    return final_msg
+
+
+# ---------------------------------------------------------------------------
+# Re-export Usage for tests/legacy callers
+# ---------------------------------------------------------------------------
+
+__all__ = ["app", "state", "AppState", "Usage"]

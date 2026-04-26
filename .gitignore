@@ -1,0 +1,46 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+.env.*
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+*.log
+
+# Global gitignore suppresses CLAUDE.md project-wide; we want it tracked here
+# because it's the project onboarding doc for new Claude sessions.
+!CLAUDE.md
+
+# never commit anything personal accidentally
+staging/
+context/
+sessions/
+session-logs/
+uploads/
+archives/
+*.pdf
+*.eml
+*.sqlite
+*.db
+.credentials/
+.gstack/
+anthropic-api-key
+*-api-key
+*.key
+
+# Helm chart packaging artefacts
+chart/*.tgz
+charts/
+
+# Local dev data dir
+data/
+/data/
+
+# library/people stores get created at runtime
+library/
+people/

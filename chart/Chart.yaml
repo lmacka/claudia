@@ -1,0 +1,16 @@
+apiVersion: v2
+name: claudia
+description: Self-hosted single-tenant AI companion for autistic adults and parents of neurodivergent kids. Helm-deployable. Adult or kid mode per release.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/lmacka/claudia
+maintainers:
+  - name: Liam Mackenzie
+    email: lmacka@gmail.com
+keywords:
+  - companion
+  - therapy-bridge-tool
+  - autistic
+  - neurodivergent
+  - self-hosted

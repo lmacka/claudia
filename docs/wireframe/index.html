@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en" class="theme-sage">
+<head>
+<meta charset="UTF-8">
+<title>claudia — wireframe map</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="mockbar"><strong>claudia wireframe v2</strong> &mdash; dark + pastel themes &middot; 3-stage setup &middot; mood at start+end</div>
+
+<h1>claudia &mdash; wireframe map</h1>
+
+<p>Click through any flow. Notes in italic are design intent, not literal copy. Every page uses the dark sage theme by default; the <a href="settings.html">settings page</a> shows the picker (blush / sage / lavender / amber / high-contrast).</p>
+
+<div class="panel">
+  <h2>Adult mode (Liam's deploy)</h2>
+  <p class="note">Single user. No /admin. Library is editable.</p>
+  <ol>
+    <li>Setup wizard (3 stages):
+      <ul>
+        <li><a href="setup-adult-1.html">/setup/1</a> &mdash; name + DOB</li>
+        <li><a href="setup-adult-2.html">/setup/2</a> &mdash; ingest documents, claudia auto-populates a profile draft</li>
+        <li><a href="setup-adult-3.html">/setup/3</a> &mdash; recap + offer to add more, ready</li>
+      </ul>
+    </li>
+    <li><a href="home-adult.html">/</a> &mdash; chat list + mood log</li>
+    <li><a href="chat-adult.html">/session/&lt;id&gt;</a> &mdash; chat (mood at start AND end, full tools)</li>
+    <li><a href="library-adult.html">/library</a> &mdash; documents</li>
+    <li><a href="people-adult.html">/people</a> &mdash; relationship map</li>
+    <li><a href="report-adult.html">/report</a> &mdash; therapist handover PDF</li>
+    <li><a href="memory-diff-adult.html">/session/&lt;id&gt;/review</a> &mdash; memory review (button-driven, no internals shown)</li>
+    <li><a href="settings.html">/settings</a> &mdash; theme + prompt overrides</li>
+  </ol>
+</div>
+
+<div class="panel">
+  <h2>Kid mode (Jasper's deploy)</h2>
+  <p class="note">Two roles in one Helm release. Kid sees clean chat. Parent (deployer) sees /admin.</p>
+  <ol>
+    <li><strong>Parent</strong> setup wizard (3 stages):
+      <ul>
+        <li><a href="setup-kid-1.html">/setup/1</a> &mdash; kid's name + DOB + parent password</li>
+        <li><a href="setup-kid-2.html">/setup/2</a> &mdash; drop docs about kid, claudia drafts a profile, parent reviews</li>
+        <li><a href="setup-kid-3.html">/setup/3</a> &mdash; recap, generate break-glass envelope, hand-off URL</li>
+      </ul>
+    </li>
+    <li><a href="kid-firstchat.html">/</a> &mdash; <em>kid</em>'s first ever login (lighter banner, sets passphrase)</li>
+    <li><a href="chat-kid.html">/</a> &mdash; <em>kid</em> chat (action buttons, mood at start+end, persistent crisis footer that doesn't end the convo)</li>
+    <li><a href="admin-home.html">/admin</a> &mdash; <em>parent</em> dashboard (tile layout)</li>
+    <li><a href="admin-review.html">/admin/review</a> &mdash; <em>parent</em> Sonnet meta-audit</li>
+    <li><a href="library-adult.html">/admin/library</a> &mdash; <em>parent</em> manages library (same UI)</li>
+  </ol>
+</div>
+
+<div class="panel">
+  <h2>Changes from v1</h2>
+  <ul>
+    <li>Dark base with 5 theme options (sage default). Settings page picker.</li>
+    <li>Setup is 3 stages, not one mega-form. Stage 2 is "drop docs, claudia drafts a profile" &mdash; the wizard does work for the parent.</li>
+    <li>DOB stored, age computed.</li>
+    <li>Mood collected at session start AND end, not just end.</li>
+    <li>Memory-review uses plain language (no md filenames in the user-facing copy).</li>
+    <li>Kid first-chat banner trimmed from 4 bullets to 3, warmer.</li>
+    <li>Kid chat: "your parents" not "your dad". Hotlines show but conversation continues.</li>
+    <li>Admin home is tile layout, not a list.</li>
+    <li><strong>Both chats: "+ attach" button + paste-from-clipboard for screenshots and docs.</strong></li>
+    <li><strong>Kid attachments: OCR via Sonnet vision &rarr; text saved to chat &rarr; original image discarded.</strong> Detected names cross-checked against the shared <code>/people</code> store; unknown names trigger an inline "remember?" prompt that adds to the same store.</li>
+    <li><strong>Single people store</strong> shared between kid and parent (parent manages at <code>/admin/people</code>). Classmate names aren't confidential &mdash; parents already know who their kid hangs around with.</li>
+  </ul>
+</div>
+
+<footer>
+claudia design wireframe v2 &mdash; revised 2026-04-26 during /office-hours
+</footer>
+
+</body>
+</html>

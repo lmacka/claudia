@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}robo — therapist handover{% endblock %}
+{% block content %}
+<header>
+  <a href="/" class="muted">&larr; home</a>
+  <h1>Therapist handover</h1>
+</header>
+
+<p class="muted">
+  <small>
+    One-page PDF covering session content in the chosen date range. Defaults
+    to {% if last_export %}your last export ({{ last_export[:10] }}){% else %}the last 30 days{% endif %}
+    through today.
+  </small>
+</p>
+
+<form method="post" action="/report" class="report-form">
+  <label>
+    <span>Start date</span>
+    <input type="date" name="start_date" value="{{ default_start }}" required>
+  </label>
+  <label>
+    <span>End date</span>
+    <input type="date" name="end_date" value="{{ default_end }}" required>
+  </label>
+  <button type="submit" class="primary">Generate PDF</button>
+  <p class="muted">
+    <small>Generation takes ~10–30 seconds. The PDF will download when ready.</small>
+  </p>
+</form>
+{% endblock %}

@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en" class="theme-sage">
+<head>
+<meta charset="UTF-8"><title>setup kid — stage 1</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="mockbar">
+  <a href="index.html">&larr; map</a>
+  <strong>/setup/1</strong> &mdash; <em>parent</em> first-run, stage 1
+  <span class="role parent">parent</span>
+</div>
+
+<h1>Setting claudia up for someone you love.</h1>
+<p>You're the deployer. They'll be the user. Three stages. This is your one shot to set them up well &mdash; once you hand it over, you only see summaries, not their chats.</p>
+
+<div class="steps">
+  <div class="step active"><span class="num">1</span>basics</div>
+  <div class="step"><span class="num">2</span>add their context</div>
+  <div class="step"><span class="num">3</span>recap &amp; hand off</div>
+</div>
+
+<div class="panel">
+  <h3>Who is this claudia for?</h3>
+  <label>name</label>
+  <input type="text" value="Jasper O'Hara">
+
+  <label>preferred name (how claudia will address them)</label>
+  <input type="text" value="Jasper">
+
+  <label>date of birth</label>
+  <input type="date" value="2010-09-22" style="max-width: 200px;">
+  <p class="note" style="margin-top: 6px;">DOB &mdash; age computed. Used to tune the kid-mode persona (a 9yo and a 16yo need different voices).</p>
+</div>
+
+<div class="panel">
+  <h3>Your parent password</h3>
+  <p class="note">This is how YOU log in to /admin (library, settings, meta-audit). Your kid won't see this and won't know it. They'll set their own password later.</p>
+  <label>parent password</label>
+  <input type="password" value="**********">
+  <label>confirm</label>
+  <input type="password" value="**********">
+</div>
+
+<div class="panel">
+  <h3>Where are you?</h3>
+  <p class="note">Sets time zone and crisis hotlines for kid mode (Lifeline, Kids Helpline, etc).</p>
+  <label>country</label>
+  <select>
+    <option selected>Australia</option>
+    <option>New Zealand</option>
+    <option>UK</option>
+    <option>US</option>
+    <option>other</option>
+  </select>
+</div>
+
+<p>
+  <a class="btn primary big" href="setup-kid-2.html">next: tell claudia about Jasper &rarr;</a>
+</p>
+
+<footer><a href="index.html">&larr; back to map</a></footer>
+
+</body>
+</html>
