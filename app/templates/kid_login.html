@@ -8,7 +8,7 @@
 
   <div class="panel" style="border: 1px solid var(--pico-muted-border-color); padding: var(--r-space-4); border-radius: var(--pico-border-radius); margin-bottom: var(--r-space-4);">
     <ul class="firstchat-bullets">
-      <li><strong>This is mostly yours.</strong> What you type stays between us. {{ parent_display_name }} sees a short summary of <em>themes</em>, never your actual words, so they know roughly how you're going.</li>
+      <li><strong>This is yours, but not secret.</strong> {{ parent_display_name }} set this up on their own server and can read what you write if they really need to. What they normally look at is a short summary of <em>themes</em> — mood, what kind of week you're having — not your actual words. They go to your full chat only if something seems wrong.</li>
       <li><strong>I'm an AI, not a friend.</strong> I won't pretend otherwise. I can help you think; I can't replace people who care about you.</li>
       <li><strong>If something's really bad, I'll point you to people who can help</strong> (numbers below) and I'll stay with you while you figure it out.</li>
     </ul>
@@ -23,7 +23,7 @@
     <label for="passphrase">{% if is_first_time %}pick a password{% else %}password{% endif %}</label>
     <input type="password" id="passphrase" name="passphrase" required minlength="12" autofocus>
     {% if is_first_time %}
-      <small class="muted">at least 12 characters. don't tell anyone. if you forget it, {{ parent_display_name }} have a sealed emergency key they can use.</small>
+      <small class="muted">at least 12 characters. don't tell anyone. if you forget it, {{ parent_display_name }} can reset it for you.</small>
       <label for="confirm" style="margin-top: var(--r-space-3);">type it again</label>
       <input type="password" id="confirm" name="confirm" required minlength="12">
     {% endif %}

@@ -15,9 +15,11 @@ You do NOT have:
 
 Call `submit_kid_audit_report` exactly once. Two outputs, both structured.
 
-### Output A: full session-log (will be encrypted at rest)
+### Output A: full session-log
 
-This is the auditor's FULL summary of the session. It's encrypted with the kid's passphrase + parent break-glass key. It's read by the next companion turn for context. Quotes ARE allowed here. People's names ARE allowed. Specific details ARE allowed. The kid will see this themselves if they review past sessions.
+This is the auditor's FULL summary of the session. It's read by the next companion turn for context. Quotes ARE allowed here. People's names ARE allowed. Specific details ARE allowed. The kid will see this themselves if they review past sessions.
+
+(v1 dev mode: stored plaintext on disk. v1.5 will encrypt this with the kid's passphrase + parent break-glass key. Until then, treat it as plaintext-but-not-the-thing-the-parent-reads-by-default; the precis below is what `/admin/review` surfaces.)
 
 Format: a short markdown summary (~150-300 words). Cover:
 - What the kid wanted help with this session
@@ -26,15 +28,15 @@ Format: a short markdown summary (~150-300 words). Cover:
 - Mood arc within the session
 - Anything claudia (the companion) noticed about the kid's state, habits, or patterns
 
-### Output B: themes-only audit precis (PLAINTEXT, parent-readable)
+### Output B: themes-only audit precis (parent-readable, primary parent view)
 
-This is the unencrypted summary the parent sees in `/admin/review`. It MUST contain:
+This is the summary the parent sees in `/admin/review`. It MUST contain:
 
 - Themes only. NO direct quotes. NO paraphrase that's specific enough to identify the actual exchange. NO names of people the kid mentioned in confidence (unless those names appear in the existing `/people` store with `proposed_by: kid` already, indicating the kid chose to surface them).
 - High-level mood/state observations: "stressed about school", "worked through a friendship reset", "calmer at end than start".
 - Safety signals: did the safety classifier trigger? Did claudia surface the crisis footer? Did the kid bring up anything dangerous?
 
-The kid is told (in their first-chat banner) that "your dad sees a short summary of themes, never your actual words." If you write a quote in this precis, you've broken the contract. So:
+The kid is told (in their first-chat banner) that the parent's *primary* view is a short themes-only summary. The full session-log is also accessible to the parent in v1 dev mode (it's plaintext on disk), but the precis is the everyday view. If you write a quote in this precis, you've broken the everyday contract. So:
 
 - If you can't say it without naming a specific exchange, leave it out.
 - If a topic was sensitive enough that even the theme summary would expose it, write only "discussed personal topics" for that segment.
@@ -53,7 +55,7 @@ Length: 2-5 sentences total. If the session was a long emotional one with many t
 
 ### Output D: people added
 
-`people_added`: array of `{name, relationship_short}` for any new people the kid added to the `/people` store via the inline `remember X?` prompt during this session. The names + short public-note are parent-visible. The kid's private notes about each person are NOT included here (those are encrypted, kid-only).
+`people_added`: array of `{name, relationship_short}` for any new people the kid added to the `/people` store via the inline `remember X?` prompt during this session. The names + short public-note are parent-visible. The kid's private notes about each person are NOT included here (kept in a separate kid-only file; v1.5 will encrypt those).
 
 ## Quality bar
 
