@@ -10,7 +10,6 @@ import pytest
 
 from app.people import People, PersonMeta, _levenshtein, _name_slug
 
-
 # ---------------------------------------------------------------------------
 # slug + levenshtein helpers
 # ---------------------------------------------------------------------------
@@ -331,7 +330,7 @@ def test_render_people_md_with_entries(tmp_path: Path):
 
 def test_render_people_md_excludes_archived(tmp_path: Path):
     p = People(tmp_path / "people")
-    a = p.add(name="Active")
+    p.add(name="Active")
     b = p.add(name="Archived")
     p.archive(b)
     out = p.render_people_md()

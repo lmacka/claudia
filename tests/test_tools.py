@@ -17,7 +17,6 @@ from app.tools.documents import (
 )
 from app.tools.registry import ToolError, ToolRegistry
 
-
 # ---------------------------------------------------------------------------
 # fixtures
 # ---------------------------------------------------------------------------

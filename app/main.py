@@ -50,13 +50,13 @@ from app import google_auth, library_pipeline, safety
 from app import summariser as summariser_mod
 from app import tool_loop as tool_loop_mod
 from app.claude import SONNET, ClaudeClient, Usage
-from app.extractors import build_registry, make_vision_callables
-from app.library import Library
-from app.library_stream import StatusBus
-from app.people import People, PersonCategory
 from app.context import TZ as BRISBANE_TZ
 from app.context import ContextLoader
+from app.extractors import build_registry, make_vision_callables
 from app.google_auth import GoogleAuthConfig
+from app.library import Library
+from app.library_stream import StatusBus
+from app.people import People
 from app.storage import (
     InMemorySessionStore,
     Message,

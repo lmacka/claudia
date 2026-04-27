@@ -115,7 +115,17 @@ See `TODOS.md` for full context. Captured during /plan-eng-review:
   delete, force-push to main never OK without explicit instruction.
 - **Commit style:** minimal messages, no emojis, no Co-Authored-By,
   no signatures, under 200 chars title, body explains the why.
-- **Tests always green before commit.** `uv run pytest tests/ -q`.
+- **Run preflight before push.** `bash scripts/preflight.sh` runs the same
+  checks CI runs (ruff, pytest, helm lint, helm template adult+kid+gateway,
+  schema-floor rejections). Both CI and local sessions invoke this single
+  script so they cannot drift. **Do not push to main without a green
+  preflight** — `uv run pytest` alone is not sufficient. CI failed silently
+  for v0.2.0 → v0.3.0 because no one ran the helm checks locally; this
+  policy exists to prevent that recurring.
+- **Verify CI before tagging a release.** `gh run list --limit 5` after
+  push — the `test` workflow on `main` must be green before you tag
+  `vX.Y.Z`. Image + chart workflows fire on tag, but a broken test job
+  means the tag is shipping un-verified code.
 - **Bridge-tool ethos still applies.** Don't make claudia more engaging for
   engagement's sake. Removed UI ceremony (per robo-therapist iterations 7-8)
   but the principle stands.

@@ -861,7 +861,7 @@ class ChatExportExtractor:
             return False
         try:
             with path.open("r", encoding="utf-8", errors="replace") as fh:
-                head = "".join([line for _i, line in zip(range(2000), fh)])
+                head = "".join([line for _i, line in zip(range(2000), fh, strict=False)])
         except OSError:
             return False
         non_empty = [ln for ln in head.splitlines() if ln.strip()][: self.SNIFF_LINES]

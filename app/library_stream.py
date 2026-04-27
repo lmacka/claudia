@@ -20,7 +20,6 @@ from collections import defaultdict, deque
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
-
 _END = object()  # sentinel marking terminal end-of-stream
 
 

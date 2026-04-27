@@ -13,7 +13,6 @@ from app.summariser import PeopleUpdate, apply_people_updates
 from app.tools.people import list_people_spec, lookup_person_spec, search_people_spec
 from app.tools.registry import ToolError
 
-
 # ---------------------------------------------------------------------------
 # fixtures
 # ---------------------------------------------------------------------------

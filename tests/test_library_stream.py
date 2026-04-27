@@ -3,17 +3,14 @@
 from __future__ import annotations
 
 import asyncio
-import io
 import threading
 import time
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
-from PIL import Image
 
 from app.library_stream import StatusBus
-
 
 # ---------------------------------------------------------------------------
 # StatusBus mechanics

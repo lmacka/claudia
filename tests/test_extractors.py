@@ -24,7 +24,6 @@ from app.extractors import (
     build_registry,
 )
 
-
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
@@ -359,8 +358,8 @@ def test_date_detection_unknown():
 
 def _write_text_pdf(path: Path, pages: list[str]) -> None:
     """Write a real text-PDF using reportlab (already a project dep)."""
-    from reportlab.pdfgen import canvas
     from reportlab.lib.pagesizes import LETTER
+    from reportlab.pdfgen import canvas
 
     c = canvas.Canvas(str(path), pagesize=LETTER)
     for page_text in pages:
