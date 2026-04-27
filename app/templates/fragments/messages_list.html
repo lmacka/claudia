@@ -1,28 +1,36 @@
 {# Full messages list fragment. While `polling`, the spinner row self-polls. #}
 <section id="messages" class="messages">
+  {% set _user_label = (display_name or "you") if claudia_mode == "kid" else "you" %}
   {% for m in messages %}
     {% if m.content %}
       {% if m.role == "user" %}
-        <article class="msg msg-user"><div class="msg-body">{{ m.content }}</div></article>
+        <article class="msg user">
+          <div class="who">{{ _user_label }}</div>
+          <div class="msg-body">{{ m.content }}</div>
+        </article>
       {% elif m.role == "assistant" %}
-        <article class="msg msg-assistant"><div class="msg-body">{{ m.content }}</div></article>
+        <article class="msg bot">
+          <div class="who">claudia</div>
+          <div class="msg-body">{{ m.content }}</div>
+        </article>
       {% endif %}
     {% endif %}
   {% endfor %}
 
   {% if polling %}
-    <article class="msg msg-assistant msg-pending"
+    <article class="msg bot msg-pending"
              hx-get="{{ poll_url }}"
              hx-trigger="load delay:2s, every 2s"
              hx-target="#messages"
              hx-swap="outerHTML">
+      <div class="who">claudia</div>
       <div class="msg-body">
-        <span class="opener-spinner" aria-hidden="true">◐</span>
         <small class="muted">writing opening message…</small>
       </div>
     </article>
   {% elif opener_failed %}
-    <article class="msg msg-assistant">
+    <article class="msg bot">
+      <div class="who">claudia</div>
       <div class="msg-body">
         <small class="muted">
           Couldn't write an opener — go ahead and start with what's on your mind.

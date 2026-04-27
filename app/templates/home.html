@@ -1,41 +1,62 @@
 {% extends "base.html" %}
 {% block title %}claudia{% endblock %}
 {% block content %}
-<header class="home-header">
-  <h1>claudia</h1>
-  <div class="home-meta">
-    {% if claudia_mode != "kid" %}
-      <a href="/library" class="muted"><small>library</small></a>
-      <a href="/people" class="muted"><small>people</small></a>
-    {% endif %}
-    {% if claudia_mode == "kid" %}
-      <a href="/logout" class="muted"><small>log out</small></a>
-    {% endif %}
-  </div>
-</header>
+
+<nav class="nav" aria-label="primary">
+  <span class="brand">claudia</span>
+  <span class="spacer"></span>
+  {% if claudia_mode != "kid" %}
+    <a href="/library">library</a>
+    <a href="/people">people</a>
+    <a href="/report">report</a>
+  {% endif %}
+  {% if claudia_mode == "kid" %}
+    <details class="kebab">
+      <summary aria-label="More options" aria-haspopup="menu">···</summary>
+      <ul role="menu">
+        <li role="none"><a role="menuitem" href="/help">real people who can help</a></li>
+        <li role="none">
+          <form method="post" action="/logout" style="margin:0;">
+            <button type="submit" role="menuitem">log out</button>
+          </form>
+        </li>
+      </ul>
+    </details>
+  {% endif %}
+</nav>
 
 {% if claudia_mode == "kid" %}
-  <p class="muted">Hi {{ display_name or "there" }}. What's going on?</p>
+  {% set kid_greetings = [
+    "Hi " ~ (display_name or "there") ~ ".",
+    "Hey " ~ (display_name or "you") ~ ".",
+    (display_name or "Hey") ~ " — what's on your mind?",
+    "Welcome back" ~ (", " ~ display_name if display_name else "") ~ ".",
+    "Good to see you" ~ (", " ~ display_name if display_name else "") ~ ".",
+  ] %}
+  <h1 style="margin-bottom: 4px;">{{ kid_greetings | random }}</h1>
+  <p class="muted" style="margin-top: 0;">What's going on?</p>
+{% else %}
+  <h1>{{ display_name or "claudia" }}</h1>
 {% endif %}
 
 {% if mood_sparkline and claudia_mode != "kid" %}
-  <aside class="mood-strip">
-    <span class="bridge-mood" title="regulation trend, last 20 sessions">mood: {{ mood_sparkline }}</span>
-  </aside>
+  <p class="muted" style="font-family: ui-monospace, monospace; letter-spacing: 0.1rem; margin: 0 0 12px;" title="regulation trend, last 20 sessions">
+    mood: {{ mood_sparkline }}
+  </p>
 {% endif %}
 
 {% if active %}
   <article class="resume-banner">
     <strong>Unfinished {{ "chat" if claudia_mode == "kid" else "session" }} from {{ active.label }}</strong>
     <div class="row">
-      <a href="/session/{{ active.session_id }}" role="button">Resume</a>
-      <form method="post" action="/session/{{ active.session_id }}/end" class="inline">
-        <button type="submit" class="secondary outline">End</button>
+      <a href="/session/{{ active.session_id }}" role="button" class="primary">Resume</a>
+      <form method="post" action="/session/{{ active.session_id }}/end" class="inline" style="display:inline;">
+        <button type="submit" class="outline">End</button>
       </form>
     </div>
   </article>
 {% else %}
-  <a href="/session/new" role="button" class="primary-cta">{{ "Start a chat" if claudia_mode == "kid" else "New session" }}</a>
+  <a href="/session/new" role="button" class="primary primary-cta">{{ "Start a chat" if claudia_mode == "kid" else "New session" }}</a>
 {% endif %}
 
 {% if sessions %}
@@ -59,10 +80,11 @@
 {% endif %}
 
 {% if claudia_mode != "kid" %}
-<section class="report-link">
+<section style="margin-top: 24px;">
   <h2>Therapist handover</h2>
   <p class="muted"><small>Generate a one-page note covering recent sessions to take to your real therapist.</small></p>
-  <a href="/report" role="button" class="secondary outline">Generate report</a>
+  <a href="/report" role="button" class="outline">Generate report</a>
 </section>
 {% endif %}
+
 {% endblock %}

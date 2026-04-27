@@ -1,18 +1,19 @@
 {% extends "base.html" %}
 {% block title %}claudia — connect Gmail{% endblock %}
 {% block content %}
-<header><a href="/" class="muted">&larr; home</a></header>
+
+<nav class="nav" aria-label="primary">
+  <a href="/" class="brand">claudia</a>
+</nav>
 
 {% if variant == "connected" %}
   <h1>Gmail connected</h1>
   <p>Liam's account has read access + draft creation + calendar read/write.</p>
-  <p class="muted">
-    <small>Scopes:</small>
-    <ul class="scope-list">
-      {% for s in scopes %}<li><code>{{ s }}</code></li>{% endfor %}
-    </ul>
-  </p>
-  <p><a href="/connect-gmail/disconnect" role="button" class="secondary outline">Disconnect</a></p>
+  <p class="muted"><small>Scopes:</small></p>
+  <ul class="scope-list">
+    {% for s in scopes %}<li><code>{{ s }}</code></li>{% endfor %}
+  </ul>
+  <p><a href="/connect-gmail/disconnect" role="button" class="outline">Disconnect</a></p>
 
 {% elif variant == "connect" %}
   <h1>Connect Gmail</h1>

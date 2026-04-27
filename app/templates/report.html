@@ -1,11 +1,16 @@
 {% extends "base.html" %}
 {% block title %}claudia — therapist handover{% endblock %}
 {% block content %}
-<header>
-  <a href="/" class="muted">&larr; home</a>
-  <h1>Therapist handover</h1>
-</header>
 
+<nav class="nav" aria-label="primary">
+  <a href="/" class="brand">claudia</a>
+  <span class="spacer"></span>
+  <a href="/library">library</a>
+  <a href="/people">people</a>
+  <a href="/report" aria-current="page">report</a>
+</nav>
+
+<h1>Therapist handover</h1>
 <p class="muted">
   <small>
     One-page PDF covering session content in the chosen date range. Defaults
@@ -15,17 +20,15 @@
 </p>
 
 <form method="post" action="/report" class="report-form">
-  <label>
-    <span>Start date</span>
-    <input type="date" name="start_date" value="{{ default_start }}" required>
-  </label>
-  <label>
-    <span>End date</span>
-    <input type="date" name="end_date" value="{{ default_end }}" required>
-  </label>
-  <button type="submit" class="primary">Generate PDF</button>
-  <p class="muted">
-    <small>Generation takes ~10–30 seconds. The PDF will download when ready.</small>
-  </p>
+  <fieldset>
+    <label for="start_date">Start date</label>
+    <input type="date" id="start_date" name="start_date" value="{{ default_start }}" required>
+
+    <label for="end_date">End date</label>
+    <input type="date" id="end_date" name="end_date" value="{{ default_end }}" required>
+
+    <button type="submit" class="primary" style="margin-top: 12px;">Generate PDF</button>
+    <p class="muted"><small>Generation takes ~10–30 seconds. The PDF will download when ready.</small></p>
+  </fieldset>
 </form>
 {% endblock %}

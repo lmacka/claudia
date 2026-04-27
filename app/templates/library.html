@@ -2,19 +2,21 @@
 {% block title %}claudia — library{% endblock %}
 {% block content %}
 
-<header class="home-header">
-  <h1>library</h1>
-  <div class="home-meta">
-    <a href="/" class="muted"><small>← home</small></a>
-  </div>
-</header>
+<nav class="nav" aria-label="primary">
+  <a href="/" class="brand">claudia</a>
+  <span class="spacer"></span>
+  <a href="/library" aria-current="page">library</a>
+  <a href="/people">people</a>
+  <a href="/report">report</a>
+</nav>
 
+<h1>library</h1>
 <p class="muted">Documents claudia knows about. PDFs, screenshots, chat exports, pasted text.</p>
 
-<section class="library-add" style="margin-bottom: var(--r-space-6);">
+<section class="panel">
   <h2>Add new</h2>
 
-  <form method="post" action="/library/upload" enctype="multipart/form-data" style="margin-bottom: var(--r-space-4);">
+  <form method="post" action="/library/upload" enctype="multipart/form-data" style="margin-bottom: 16px;">
     <fieldset>
       <legend><strong>Upload a file</strong></legend>
       <label for="library-file">File (PDF, DOCX, DOC, image, .txt) — max 25 MB</label>
@@ -23,7 +25,7 @@
       <input type="text" id="library-title" name="title" placeholder="e.g. DC Diagnostic — Liam Mackenzie">
       <label for="library-tags">Tags (comma-separated, optional)</label>
       <input type="text" id="library-tags" name="tags" placeholder="e.g. diagnostic, autism">
-      <button type="submit">Upload &amp; extract</button>
+      <button type="submit" class="primary">Upload &amp; extract</button>
     </fieldset>
   </form>
 
@@ -36,7 +38,7 @@
       <input type="text" id="library-paste-tags" name="tags">
       <label for="library-paste-text">Text</label>
       <textarea id="library-paste-text" name="text" rows="6" required placeholder="Paste content (WhatsApp exports auto-detected)…"></textarea>
-      <button type="submit" class="secondary">Save paste</button>
+      <button type="submit">Save paste</button>
     </fieldset>
   </form>
 </section>
@@ -44,7 +46,10 @@
 <section>
   <h2>Active documents <small class="muted">({{ active|length }})</small></h2>
   {% if not active %}
-    <p class="muted"><em>library is empty — upload above.</em></p>
+    <div class="empty-state">
+      <p>library is empty</p>
+      <p><small>upload above to add a document.</small></p>
+    </div>
   {% else %}
     <table class="library-table">
       <thead>
@@ -68,10 +73,10 @@
 </section>
 
 {% if archived %}
-<section style="margin-top: var(--r-space-6);">
+<section style="margin-top: 24px;">
   <details>
     <summary><strong>Archived</strong> <small class="muted">({{ archived|length }})</small></summary>
-    <table class="library-table" style="margin-top: var(--r-space-3);">
+    <table class="library-table" style="margin-top: 12px;">
       <thead>
         <tr>
           <th>Title</th>

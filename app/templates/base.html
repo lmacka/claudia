@@ -1,27 +1,14 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en" class="theme-{{ theme or 'sage' }}">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="color-scheme" content="dark light">
+  <meta name="color-scheme" content="dark">
   <title>{% block title %}claudia{% endblock %}</title>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
   <link rel="stylesheet" href="/static/claudia.css?v={{ asset_version }}">
   <script src="https://unpkg.com/htmx.org@2.0.4" integrity="sha384-HGfztofotfshcF7+8n44JQL2oJmowVChPTg48S+jvZoztPfvwD79OC/LTtG6dMp+" crossorigin="anonymous"></script>
 </head>
 <body class="mode-{{ claudia_mode }}">
-  <main class="container">
-    {% block content %}{% endblock %}
-  </main>
-  {% if claudia_mode == "kid" %}
-  <footer class="crisis-footer" role="contentinfo" aria-label="Crisis support hotlines">
-    <strong>Need a real person?</strong>
-    <a href="tel:1800551800">Kids Helpline 1800 55 1800</a> ·
-    <a href="tel:131114">Lifeline 13 11 14</a> ·
-    <a href="tel:139276">13YARN 13 92 76</a> ·
-    <a href="tel:000">000 for emergencies</a>
-    <br><span class="crisis-footer-note">Always visible. Claudia will point here AND keep talking with you.</span>
-  </footer>
-  {% endif %}
+  {% block content %}{% endblock %}
 </body>
 </html>

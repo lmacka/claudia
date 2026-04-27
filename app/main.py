@@ -209,6 +209,7 @@ async def lifespan(app: FastAPI):
     state.templates.env.globals["parent_display_name"] = cfg.kid_parent_display_name
     state.templates.env.globals["crisis_footer_text"] = safety.CRISIS_FOOTER_TEXT
     state.templates.env.globals["au_hotlines"] = safety.AU_HOTLINES
+    state.templates.env.globals["theme"] = "sage"
 
     log.info(
         "app.startup",
@@ -488,6 +489,27 @@ async def logout(request: Request) -> Response:
     resp = RedirectResponse(url="/login", status_code=303)
     resp.delete_cookie(auth_mod.KID_COOKIE_NAME, path="/")
     return resp
+
+
+# ---------------------------------------------------------------------------
+# /help — public crisis-help page (no auth, by design — safety reach matters
+# more than access control).
+# ---------------------------------------------------------------------------
+
+
+@app.get("/help", response_class=HTMLResponse)
+async def help_page(request: Request) -> HTMLResponse:
+    """AU hotline directory. Reachable via the kid-chat ··· menu and direct URL.
+
+    Deliberately unauthed: a kid who's lost their password should still hit
+    the hotline numbers without bouncing through /login.
+    """
+    back = request.query_params.get("back")
+    return state.templates.TemplateResponse(
+        request,
+        "help.html",
+        {"back": back},
+    )
 
 
 # ---------------------------------------------------------------------------

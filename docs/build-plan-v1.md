@@ -126,10 +126,10 @@ Documented in `docs/safety.md` (v1 dev-mode section, top of file).
 | 4 | Three-stage setup wizard (adult + kid) | depends on 3 | |
 | 5 | Memory-diff review screen | depends on 3 | |
 | 6 | Kid-mode persona + safety + two-role auth + admin routes | ✓ done (encryption parts dormant) | 6a–6f shipped |
-| 7a | Port wireframe `style.css` + 5-theme system into `app/static/` | new | single PR; unifies tokens |
-| 7b | Re-skin existing templates against variant-C language | new | home, chat, login, admin/home, admin/review |
-| 7c | Build missing templates | new | `/library`, `/people`, `/memory-diff`, `/settings`, `/setup`x2 |
-| 7d | A11y baseline (44px targets, ARIA, focus-visible, contrast) | inline with 7b/7c | |
+| 7a | Port wireframe `style.css` + 5-theme system into `app/static/` | ✓ done | v0.3.0 — wireframe css ported, pico CDN dropped, compat shims for legacy tokens |
+| 7b | Re-skin existing templates against variant-C language | ✓ done | v0.3.0 — home, chat, login, library, people, admin/home, admin/review re-skinned. Variant-C locks: chip panel removed, mood widget removed at start AND end (kid), persistent crisis footer dropped, ··· menu added, rotating greetings + composer placeholders, inline retry chip on send fail. |
+| 7c | Build missing templates | new | `/memory-diff`, `/settings`, `/setup`x2 (library + people already done in step 3) |
+| 7d | A11y baseline (44px targets, ARIA, focus-visible, contrast) | ✓ done | v0.3.0 — min-height 40-44px on buttons/inputs, ARIA on ··· kebab, focus-visible outline, aria-current on nav, touch-friendly min-min sizes throughout |
 | 8 | OCR-discard kid attachment flow + people inline-prompt | depends on 3 | |
 | 9 | README + first-deploy walkthrough | | |
 | 10a | Red-team scenario fixture format | ship-blocker | YAML schema for {input, expected_classifier_fire, expected_judge_score, category} |

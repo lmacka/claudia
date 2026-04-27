@@ -1,19 +1,24 @@
 {% extends "base.html" %}
 {% block title %}claudia — admin review{% endblock %}
 {% block content %}
-<header class="home-header">
-  <h1>review</h1>
-  <div class="home-meta">
-    <a href="/admin">&larr; admin</a>
-    <a href="/logout">log out</a>
-  </div>
-</header>
 
+<nav class="nav" aria-label="primary">
+  <a href="/admin" class="brand">claudia <small class="muted">— parent admin</small></a>
+  <span class="spacer"></span>
+  <a href="/admin/review" aria-current="page">review</a>
+  <a href="/library">library</a>
+  <a href="/people">people</a>
+  <form method="post" action="/logout" style="margin:0;">
+    <button type="submit" class="outline">log out</button>
+  </form>
+</nav>
+
+<h1>review</h1>
 <p class="muted">Claudia reads recent <em>session summaries</em> (not raw chat) and tells you what to know. The deliberate fallback you set up at install time.</p>
 
 {% if summary %}
-  <article class="panel" style="border: 1px solid var(--pico-muted-border-color); padding: var(--r-space-4); border-radius: var(--pico-border-radius);">
-    <h2 style="margin-top: 0;">last 7 days</h2>
+  <article class="panel">
+    <h2>last 7 days</h2>
     <div style="white-space: pre-wrap;">{{ summary }}</div>
 
     {% if themes %}
@@ -34,10 +39,10 @@
     {% endif %}
   </article>
 {% else %}
-  <article class="empty-state">
+  <div class="empty-state">
     <p>No sessions to summarise yet.</p>
-    <p class="muted"><small>Once {{ display_name }} has had a chat session, the auditor produces a themes-only precis. The meta-audit reads those and writes the paragraph above.</small></p>
-  </article>
+    <p><small>Once {{ display_name }} has had a chat session, the auditor produces a themes-only precis. The meta-audit reads those and writes the paragraph above.</small></p>
+  </div>
 {% endif %}
 
 {% endblock %}

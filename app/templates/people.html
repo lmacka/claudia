@@ -2,16 +2,18 @@
 {% block title %}claudia — people{% endblock %}
 {% block content %}
 
-<header class="home-header">
-  <h1>people</h1>
-  <div class="home-meta">
-    <a href="/" class="muted"><small>← home</small></a>
-  </div>
-</header>
+<nav class="nav" aria-label="primary">
+  <a href="/" class="brand">claudia</a>
+  <span class="spacer"></span>
+  <a href="/library">library</a>
+  <a href="/people" aria-current="page">people</a>
+  <a href="/report">report</a>
+</nav>
 
+<h1>people</h1>
 <p class="muted">People claudia knows about. Co-parents, family, professionals, friends.</p>
 
-<section class="people-add" style="margin-bottom: var(--r-space-6);">
+<section class="panel">
   <details>
     <summary><strong>Add a person</strong></summary>
     <form method="post" action="/people/new">
@@ -44,7 +46,7 @@
         <label for="person-notes">Notes (free-form markdown, optional)</label>
         <textarea id="person-notes" name="notes" rows="4"></textarea>
 
-        <button type="submit">Add</button>
+        <button type="submit" class="primary">Add</button>
       </fieldset>
     </form>
   </details>
@@ -53,7 +55,10 @@
 <section>
   <h2>Active people <small class="muted">({{ active|length }})</small></h2>
   {% if not active %}
-    <p class="muted"><em>no people yet — add above.</em></p>
+    <div class="empty-state">
+      <p>no people yet</p>
+      <p><small>add above, or claudia will ask about new names as they come up.</small></p>
+    </div>
   {% else %}
     <table class="people-table">
       <thead>
@@ -76,10 +81,10 @@
 </section>
 
 {% if archived %}
-<section style="margin-top: var(--r-space-6);">
+<section style="margin-top: 24px;">
   <details>
     <summary><strong>Archived</strong> <small class="muted">({{ archived|length }})</small></summary>
-    <table class="people-table" style="margin-top: var(--r-space-3);">
+    <table class="people-table" style="margin-top: 12px;">
       <thead>
         <tr>
           <th>Name</th>
