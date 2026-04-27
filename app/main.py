@@ -105,6 +105,20 @@ log = structlog.get_logger()
 
 
 # ---------------------------------------------------------------------------
+# Theme picker (cookie-persisted; same set in adult and kid mode).
+# ---------------------------------------------------------------------------
+
+VALID_THEMES = ("sage", "blush", "lavender", "amber", "contrast")
+THEME_COOKIE_NAME = "claudia_theme"
+
+
+def _theme_context(request: Request) -> dict:
+    """Jinja2Templates context_processor: makes `theme` available everywhere."""
+    raw = request.cookies.get(THEME_COOKIE_NAME, "sage")
+    return {"theme": raw if raw in VALID_THEMES else "sage"}
+
+
+# ---------------------------------------------------------------------------
 # App state
 # ---------------------------------------------------------------------------
 
@@ -202,14 +216,37 @@ async def lifespan(app: FastAPI):
 
     import time as _time
 
-    state.templates = Jinja2Templates(directory=str(state.app_root / "templates"))
+    state.templates = Jinja2Templates(
+        directory=str(state.app_root / "templates"),
+        context_processors=[_theme_context],
+    )
     state.templates.env.globals["asset_version"] = str(int(_time.time()))
     state.templates.env.globals["claudia_mode"] = cfg.mode
     state.templates.env.globals["display_name"] = cfg.display_name
     state.templates.env.globals["parent_display_name"] = cfg.kid_parent_display_name
     state.templates.env.globals["crisis_footer_text"] = safety.CRISIS_FOOTER_TEXT
     state.templates.env.globals["au_hotlines"] = safety.AU_HOTLINES
-    state.templates.env.globals["theme"] = "sage"
+
+    # Setup-complete marker. Existing live deploys (sessions or library
+    # populated) get auto-marked so /setup doesn't bounce them. Fresh
+    # installs go through the wizard.
+    marker = cfg.data_root / ".setup_complete"
+    if not marker.exists():
+        looks_used = (
+            any((cfg.data_root / "sessions").glob("*.jsonl"))
+            or any((cfg.data_root / "session-logs").glob("*.md"))
+            or (cfg.data_root / "library" / "manifest.json").exists()
+            or (cfg.data_root / "context" / "01_background.md").exists()
+        )
+        if looks_used:
+            try:
+                marker.write_text(
+                    "auto-marked at first startup of v0.5.0; instance had pre-existing data\n",
+                    encoding="utf-8",
+                )
+                log.info("setup.auto_marked_existing_deploy", path=str(marker))
+            except OSError as e:
+                log.warning("setup.auto_mark_failed", error=str(e))
 
     log.info(
         "app.startup",
@@ -285,6 +322,32 @@ def require_auth(
         )
 
     # Adult mode
+    if credentials is None or not _check_basic_credentials(credentials):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized",
+            headers={"WWW-Authenticate": 'Basic realm="claudia"'},
+        )
+    return credentials.username
+
+
+def require_setup_auth(
+    request: Request,
+    credentials: HTTPBasicCredentials | None = Depends(_basic_auth),
+    admin_credentials: HTTPBasicCredentials | None = Depends(_admin_basic_auth),
+) -> str:
+    """Auth for /setup/* — adult uses regular basic auth, kid uses parent admin."""
+    cfg = state.cfg
+    if cfg.is_local:
+        return "liam"
+    if cfg.is_kid:
+        if admin_credentials is not None and _check_basic_credentials(admin_credentials):
+            return admin_credentials.username
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="setup is parent-admin only in kid mode",
+            headers={"WWW-Authenticate": 'Basic realm="claudia-admin"'},
+        )
     if credentials is None or not _check_basic_credentials(credentials):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -492,6 +555,40 @@ async def logout(request: Request) -> Response:
 
 
 # ---------------------------------------------------------------------------
+# /settings — theme picker. Same UI in adult + kid; cookie-persisted.
+# ---------------------------------------------------------------------------
+
+
+@app.get("/settings", response_class=HTMLResponse)
+async def settings_page(request: Request, _: str = Depends(require_auth)) -> HTMLResponse:
+    return state.templates.TemplateResponse(
+        request,
+        "settings.html",
+        {"valid_themes": VALID_THEMES},
+    )
+
+
+@app.post("/settings/theme")
+async def settings_theme(request: Request, _: str = Depends(require_auth)) -> Response:
+    form = await request.form()
+    theme = str(form.get("theme", "")).strip()
+    if theme not in VALID_THEMES:
+        theme = "sage"
+    resp = RedirectResponse(url="/settings", status_code=303)
+    # 1-year expiry, host-scoped, no Secure flag (works on http during local
+    # dev too; ingress provides TLS in production).
+    resp.set_cookie(
+        THEME_COOKIE_NAME,
+        theme,
+        max_age=60 * 60 * 24 * 365,
+        path="/",
+        samesite="Lax",
+        httponly=False,  # template reads it; nothing secret in it
+    )
+    return resp
+
+
+# ---------------------------------------------------------------------------
 # /help — public crisis-help page (no auth, by design — safety reach matters
 # more than access control).
 # ---------------------------------------------------------------------------
@@ -561,8 +658,173 @@ async def admin_review(
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# /setup — first-run wizard. Three stages. Writes /data/.setup_complete on
+# finish. / redirects here when the marker is missing.
+# ---------------------------------------------------------------------------
+
+
+def _setup_state_path() -> Path:
+    return state.cfg.data_root / ".setup_state.json"
+
+
+def _setup_state_load() -> dict:
+    p = _setup_state_path()
+    if not p.exists():
+        return {}
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _setup_state_save(updates: dict) -> None:
+    p = _setup_state_path()
+    cur = _setup_state_load()
+    cur.update(updates)
+    tmp = p.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(cur, indent=2), encoding="utf-8")
+    tmp.replace(p)
+
+
+def _setup_marker() -> Path:
+    return state.cfg.data_root / ".setup_complete"
+
+
+@app.get("/setup", response_class=HTMLResponse)
+@app.get("/setup/", response_class=HTMLResponse)
+async def setup_root(_: str = Depends(require_setup_auth)) -> Response:
+    return RedirectResponse(url="/setup/1", status_code=303)
+
+
+@app.get("/setup/1", response_class=HTMLResponse)
+async def setup_step1(request: Request, _: str = Depends(require_setup_auth)) -> HTMLResponse:
+    state_data = _setup_state_load()
+    return state.templates.TemplateResponse(
+        request,
+        "setup/step1.html",
+        {
+            "step": 1,
+            "data": state_data,
+            "cfg_display_name": state.cfg.display_name,
+            "cfg_country": state.cfg.country,
+            "cfg_parent_display_name": state.cfg.kid_parent_display_name,
+        },
+    )
+
+
+@app.post("/setup/1")
+async def setup_step1_submit(request: Request, _: str = Depends(require_setup_auth)) -> Response:
+    form = await request.form()
+    _setup_state_save(
+        {
+            "preferred_name": str(form.get("preferred_name", "")).strip(),
+            "dob": str(form.get("dob", "")).strip(),
+            "country": str(form.get("country", "")).strip() or "AU",
+            "region": str(form.get("region", "")).strip(),
+        }
+    )
+    return RedirectResponse(url="/setup/2", status_code=303)
+
+
+@app.get("/setup/2", response_class=HTMLResponse)
+async def setup_step2(request: Request, _: str = Depends(require_setup_auth)) -> HTMLResponse:
+    state_data = _setup_state_load()
+    docs = state.library.list_active() if hasattr(state, "library") else []
+    return state.templates.TemplateResponse(
+        request,
+        "setup/step2.html",
+        {
+            "step": 2,
+            "data": state_data,
+            "docs": docs,
+        },
+    )
+
+
+@app.post("/setup/2")
+async def setup_step2_submit(request: Request, _: str = Depends(require_setup_auth)) -> Response:
+    form = await request.form()
+    _setup_state_save(
+        {
+            "section_who": str(form.get("section_who", "")).strip(),
+            "section_stressors": str(form.get("section_stressors", "")).strip(),
+            "section_never": str(form.get("section_never", "")).strip(),
+            "section_for": str(form.get("section_for", "")).strip(),
+        }
+    )
+    return RedirectResponse(url="/setup/3", status_code=303)
+
+
+@app.get("/setup/3", response_class=HTMLResponse)
+async def setup_step3(request: Request, _: str = Depends(require_setup_auth)) -> HTMLResponse:
+    state_data = _setup_state_load()
+    docs = state.library.list_active() if hasattr(state, "library") else []
+    return state.templates.TemplateResponse(
+        request,
+        "setup/step3.html",
+        {
+            "step": 3,
+            "data": state_data,
+            "docs": docs,
+        },
+    )
+
+
+@app.post("/setup/3")
+async def setup_step3_submit(_: str = Depends(require_setup_auth)) -> Response:
+    """Commit setup: write 01_background.md, drop the working state, mark complete."""
+    state_data = _setup_state_load()
+    cfg = state.cfg
+
+    # Compose a single 01_background.md from the four textareas. ContextLoader
+    # reads this verbatim into block 1.
+    target_label = cfg.display_name or state_data.get("preferred_name") or "the user"
+    if cfg.is_kid:
+        target_label = cfg.display_name or "this kid"
+    sections = []
+    sections.append(f"# About {target_label}\n")
+    if state_data.get("section_who"):
+        sections.append("## Who they are right now\n\n" + state_data["section_who"].strip() + "\n")
+    if state_data.get("section_stressors"):
+        sections.append("## Active stressors right now\n\n" + state_data["section_stressors"].strip() + "\n")
+    if state_data.get("section_never"):
+        sections.append("## What claudia should never do\n\n" + state_data["section_never"].strip() + "\n")
+    if state_data.get("section_for"):
+        sections.append("## What claudia is for\n\n" + state_data["section_for"].strip() + "\n")
+    if state_data.get("dob"):
+        sections.append(f"## Date of birth\n\n{state_data['dob']}\n")
+    if state_data.get("country") or state_data.get("region"):
+        loc = ", ".join(x for x in [state_data.get("region", ""), state_data.get("country", "")] if x)
+        sections.append(f"## Location\n\n{loc}\n")
+
+    body = "\n".join(sections).strip() + "\n"
+    bg_path = cfg.data_root / "context" / "01_background.md"
+    bg_path.parent.mkdir(parents=True, exist_ok=True)
+    bg_path.write_text(body, encoding="utf-8")
+
+    # Mark complete; clean up working state.
+    _setup_marker().write_text(
+        f"setup completed at {datetime.now(UTC).isoformat()}\n",
+        encoding="utf-8",
+    )
+    try:
+        _setup_state_path().unlink(missing_ok=True)
+    except OSError:
+        pass
+
+    log.info("setup.completed", data_root=str(cfg.data_root))
+    # Adult → home; kid → admin home.
+    target = "/admin" if cfg.is_kid else "/"
+    return RedirectResponse(url=target, status_code=303)
+
+
 @app.get("/", response_class=HTMLResponse)
-async def home(request: Request, _: str = Depends(require_auth)) -> HTMLResponse:
+async def home(request: Request, _: str = Depends(require_auth)) -> Response:
+    # First-run gate. If the parent (or adult) hasn't run the wizard yet,
+    # bounce here. Existing live deploys are auto-marked complete on startup.
+    if not _setup_marker().exists():
+        return RedirectResponse(url="/setup/1", status_code=303)
     sessions = state.store.list_sessions()
     active = state.store.active_session()
     mood_line = _mood_sparkline(state.cfg.data_root)
@@ -882,6 +1144,82 @@ async def session_message(
     )
 
 
+@app.get("/session/{session_id}/review", response_class=HTMLResponse)
+async def session_review(
+    session_id: str, request: Request, _: str = Depends(require_auth)
+) -> HTMLResponse:
+    """Adult-mode memory-diff review. Read-only for v0.5.0 — surfaces the
+    auditor's report as cards so the user can see what claudia learnt.
+    Interactive keep/edit/discard is a v0.5.x follow-up."""
+    if not state.cfg.is_adult:
+        raise HTTPException(404, "review is adult-mode only")
+    try:
+        header = state.store.load_header(session_id)
+    except FileNotFoundError:
+        raise HTTPException(404, "Session not found")
+
+    sidecar = summariser_mod.read_audit_sidecar(state.cfg.data_root, session_id)
+    audit_running = (
+        _event_present(session_id, "audit_scheduled")
+        and not _event_present(session_id, "audit_applied")
+        and not _event_present(session_id, "auditor_failed")
+    )
+    audit_failed = _event_present(session_id, "auditor_failed")
+
+    # Build display-ready diff cards.
+    cards: list[dict] = []
+    if sidecar:
+        if (sidecar.get("current_state_proposed") or "").strip():
+            cards.append({
+                "verb": "update",
+                "title": "Top of mind right now",
+                "rationale": sidecar.get("current_state_rationale") or "",
+                "body": sidecar["current_state_proposed"],
+                "kind": "current_state",
+            })
+        for u in sidecar.get("people_updates") or []:
+            verb = {"add": "add", "update": "update", "touch": "update"}.get(u.get("action"), "update")
+            who = u.get("name") or u.get("id") or "(person)"
+            descr_parts: list[str] = []
+            if u.get("relationship"):
+                descr_parts.append(u["relationship"])
+            if u.get("summary"):
+                descr_parts.append(u["summary"])
+            if u.get("important_context"):
+                descr_parts.append("• " + " • ".join(u["important_context"]))
+            if u.get("append_note"):
+                descr_parts.append(u["append_note"])
+            cards.append({
+                "verb": verb,
+                "title": ("New: " if u.get("action") == "add" else "About ") + who,
+                "rationale": "",
+                "body": "\n".join(descr_parts) if descr_parts else "(no detail)",
+                "kind": "person",
+            })
+        for f in sidecar.get("app_feedback") or []:
+            quote = (f.get("quote") or "").strip()
+            obs = (f.get("observation") or "").strip()
+            cards.append({
+                "verb": "add",
+                "title": "Note for the developer",
+                "rationale": "",
+                "body": (f"> {quote}\n\n{obs}" if quote else obs) or "(empty)",
+                "kind": "app_feedback",
+            })
+
+    return state.templates.TemplateResponse(
+        request,
+        "session_review.html",
+        {
+            "header": header,
+            "sidecar": sidecar,
+            "cards": cards,
+            "audit_running": audit_running,
+            "audit_failed": audit_failed,
+        },
+    )
+
+
 @app.post("/session/{session_id}/end")
 async def session_end(
     session_id: str,
@@ -1057,6 +1395,13 @@ def _run_audit_and_apply(session_id: str) -> None:
             state.store.append_event(
                 session_id, "people_updates_applied", {"count": len(applied), "items": applied}
             )
+
+    # Persist a structured sidecar so /session/<id>/review can render the
+    # memory-diff cards. Independent of session-log markdown (which is prose).
+    try:
+        summariser_mod.write_audit_sidecar(state.cfg.data_root, session_id, report)
+    except OSError as e:
+        log.warning("audit.sidecar_failed", session_id=session_id, error=str(e))
 
     state.store.append_event(session_id, "audit_applied", {})
 

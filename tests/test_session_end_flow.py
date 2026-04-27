@@ -20,6 +20,8 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     ctx = tmp_path / "context"
     ctx.mkdir(parents=True, exist_ok=True)
     (ctx / "05_current_state.md").write_text("# current_state stub\n", encoding="utf-8")
+    # Mark setup complete so / doesn't redirect to the wizard.
+    (tmp_path / ".setup_complete").write_text("test fixture\n", encoding="utf-8")
 
     import app.main as main_module
 
@@ -193,11 +195,6 @@ def test_messages_poll_stops_polling_once_message_lands(client: TestClient) -> N
 def test_removed_summary_route_404(client: TestClient) -> None:
     sid = _create_session(client)
     r = client.get(f"/session/{sid}/summary")
-    assert r.status_code == 404
-
-
-def test_removed_settings_route_404(client: TestClient) -> None:
-    r = client.get("/settings")
     assert r.status_code == 404
 
 

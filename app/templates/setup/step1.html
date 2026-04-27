@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}claudia — setup, basics{% endblock %}
+{% block content %}
+
+<nav class="nav" aria-label="primary">
+  <span class="brand">claudia</span>
+  <span class="spacer"></span>
+  <span class="muted"><small>first-run setup</small></span>
+</nav>
+
+{% if claudia_mode == "kid" %}
+  <h1>Setting claudia up for {{ display_name or "your kid" }}.</h1>
+  <p class="muted">You're the deployer. They'll be the user. Three stages. This is your one shot to set them up well — once you hand it over, you only see summaries, not their chats.</p>
+{% else %}
+  <h1>Welcome.</h1>
+  <p class="muted">Three quick stages and claudia will be set up for you.</p>
+{% endif %}
+
+<div class="steps">
+  <div class="step active"><span class="num">1</span>basics</div>
+  <div class="step"><span class="num">2</span>add context</div>
+  <div class="step"><span class="num">3</span>recap &amp; ready</div>
+</div>
+
+<form method="post" action="/setup/1">
+
+  <section class="panel">
+    <h3>{% if claudia_mode == "kid" %}Who is this claudia for?{% else %}Who is claudia for?{% endif %}</h3>
+
+    <label>display name <small class="muted">(set at install via Helm; not editable here)</small></label>
+    <input type="text" value="{{ cfg_display_name or '' }}" disabled>
+
+    <label for="preferred_name">preferred name (how I'll address {% if claudia_mode == "kid" %}them{% else %}you{% endif %})</label>
+    <input type="text" id="preferred_name" name="preferred_name"
+           value="{{ data.preferred_name or cfg_display_name }}">
+
+    <label for="dob">date of birth</label>
+    <input type="date" id="dob" name="dob" value="{{ data.dob or '' }}" style="max-width: 220px;">
+    <small class="muted">DOB stored, not age — age stays accurate over time.</small>
+  </section>
+
+  <section class="panel">
+    <h3>Where {% if claudia_mode == "kid" %}are you{% else %}are you{% endif %}?</h3>
+    <p class="muted"><small>Used for time zone, crisis-line numbers, and "now" awareness in chat.</small></p>
+
+    <label for="country">country</label>
+    <select id="country" name="country">
+      {% set countries = ["AU", "NZ", "UK", "US", "CA", "IE", "other"] %}
+      {% for c in countries %}
+        <option value="{{ c }}"{% if (data.country or cfg_country or 'AU') == c %} selected{% endif %}>{{ c }}</option>
+      {% endfor %}
+    </select>
+
+    <label for="region">state / region (optional)</label>
+    <input type="text" id="region" name="region" value="{{ data.region or '' }}" style="max-width: 280px;">
+  </section>
+
+  <p style="margin-top: 18px;">
+    <button type="submit" class="primary big">next: add context &rarr;</button>
+  </p>
+</form>
+
+{% endblock %}

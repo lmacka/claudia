@@ -27,6 +27,7 @@ def _fresh_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str = "kid
     ctx = tmp_path / "context"
     ctx.mkdir(parents=True, exist_ok=True)
     (ctx / "05_current_state.md").write_text("# current_state stub\n", encoding="utf-8")
+    (tmp_path / ".setup_complete").write_text("test fixture\n", encoding="utf-8")
 
     if "app.main" in sys.modules:
         importlib.reload(sys.modules["app.main"])

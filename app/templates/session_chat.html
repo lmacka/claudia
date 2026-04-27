@@ -10,6 +10,7 @@
       <summary aria-label="More options" aria-haspopup="menu">···</summary>
       <ul role="menu">
         <li role="none"><a role="menuitem" href="/help">real people who can help</a></li>
+        <li role="none"><a role="menuitem" href="/settings">settings</a></li>
         <li role="none">
           <form method="post" action="/logout" style="margin:0;">
             <button type="submit" role="menuitem">log out</button>
@@ -111,6 +112,9 @@
   {% else %}
     {% set session_id = header.session_id %}
     {% include "fragments/mood_panel.html" %}
+    <p style="margin-top: 14px; text-align: center;">
+      <a href="/session/{{ header.session_id }}/review" role="button" class="outline">review what I learnt &rarr;</a>
+    </p>
   {% endif %}
 {% else %}
 <p class="muted">

@@ -20,6 +20,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     ctx = tmp_path / "context"
     ctx.mkdir(parents=True, exist_ok=True)
     (ctx / "05_current_state.md").write_text("# stub\n", encoding="utf-8")
+    (tmp_path / ".setup_complete").write_text("test fixture\n", encoding="utf-8")
 
     import app.main as main_module
 

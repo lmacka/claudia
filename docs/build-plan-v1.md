@@ -123,12 +123,12 @@ Documented in `docs/safety.md` (v1 dev-mode section, top of file).
 | 1 | Repo + chart skeleton + CI + examples | ✓ done | commits up to `b0eae8e` |
 | 2 | Adult mode parity | ✓ done | `ff84e0c` |
 | 3 | Library + people + extractors | ✓ done | 8 commits A–H (`0b4c4fc` → `c539dcb`). Library, extractor framework + 6 format-specific extractors, /library + /people routes + UI, SSE streaming, people tools + auditor people_updates, documents.py rewrite. 286 tests pass. |
-| 4 | Three-stage setup wizard (adult + kid) | depends on 3 | |
-| 5 | Memory-diff review screen | depends on 3 | |
+| 4 | Three-stage setup wizard (adult + kid) | ✓ done | v0.5.0 — /setup/{1,2,3} parent-side wizard, basics + library link + 4 textareas → composes 01_background.md on finish, writes /data/.setup_complete. Lifespan auto-marks existing deploys. / redirects to /setup/1 if marker missing. Adult auth gates adult mode; parent-admin auth gates kid mode. Auto-profile-draft (LLM summarising uploaded docs) deferred to v0.5.x. |
+| 5 | Memory-diff review screen | ✓ done | v0.5.0 — /session/{id}/review (adult-only) reads new `audit-sidecars/<id>.json` written by the auditor, renders current_state + people_updates + app_feedback as diff cards. Read-only for v0.5.0; interactive keep/edit/discard deferred to v0.5.x. Linked from chat-ended state. |
 | 6 | Kid-mode persona + safety + two-role auth + admin routes | ✓ done (encryption parts dormant) | 6a–6f shipped |
 | 7a | Port wireframe `style.css` + 5-theme system into `app/static/` | ✓ done | v0.3.0 — wireframe css ported, pico CDN dropped, compat shims for legacy tokens |
 | 7b | Re-skin existing templates against variant-C language | ✓ done | v0.3.0 — home, chat, login, library, people, admin/home, admin/review re-skinned. Variant-C locks: chip panel removed, mood widget removed at start AND end (kid), persistent crisis footer dropped, ··· menu added, rotating greetings + composer placeholders, inline retry chip on send fail. |
-| 7c | Build missing templates | new | `/memory-diff`, `/settings`, `/setup`x2 (library + people already done in step 3) |
+| 7c | Build missing templates | ✓ done | v0.5.0 — /settings (theme switcher + about), /setup/{1,2,3}, /session/{id}/review. Theme picker is cookie-persisted (claudia_theme, 1y); same UI in adult + kid (kebab menu re-includes settings). |
 | 7d | A11y baseline (44px targets, ARIA, focus-visible, contrast) | ✓ done | v0.3.0 — min-height 40-44px on buttons/inputs, ARIA on ··· kebab, focus-visible outline, aria-current on nav, touch-friendly min-min sizes throughout |
 | 8 | OCR-discard kid attachment flow + people inline-prompt | ✓ done | v0.4.0 — POST /session/{id}/kid-attach: sync vision OCR via ImageExtractor, original image deleted, user-msg + ocr-tool-card + assistant-reply rendered together. People inline-prompt simplified to dialogue (companion uses lookup_person/search_people, asks the kid; auditor records via people_updates at session end — kid-mode write_tools_disabled stays). 10 new tests covering happy path + 415/413/400/404/410/404-in-adult. |
 | 9 | README + first-deploy walkthrough | | |

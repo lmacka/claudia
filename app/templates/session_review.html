@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}claudia — what I learnt{% endblock %}
+{% block content %}
+
+<nav class="nav" aria-label="primary">
+  <a href="/" class="brand">claudia</a>
+  <span class="spacer"></span>
+  <a href="/library">library</a>
+  <a href="/people">people</a>
+  <a href="/report">report</a>
+  <a href="/settings">settings</a>
+</nav>
+
+<h1>What I think I learnt about you</h1>
+<p class="muted">From <a href="/session/{{ header.session_id }}">this chat</a>{% if header.title %} — &ldquo;{{ header.title }}&rdquo;{% endif %}.</p>
+
+{% if audit_running %}
+  <article class="panel">
+    <h2 style="margin-top:0;">Still thinking…</h2>
+    <p class="muted">The auditor is reading your session. Refresh in a few seconds.</p>
+  </article>
+{% elif audit_failed %}
+  <article class="panel" style="border-color: var(--danger);">
+    <h2 style="margin-top:0; color: var(--danger);">Couldn&rsquo;t generate a review</h2>
+    <p class="muted">The auditor errored. Your session is still saved — the review just didn&rsquo;t produce a structured payload this time.</p>
+  </article>
+{% elif not sidecar %}
+  <div class="empty-state">
+    <p>No review available for this session.</p>
+    <p><small>Reviews appear once the audit pass has run. Adult-mode auditor runs in a background task after you end a session.</small></p>
+  </div>
+{% elif not cards %}
+  <div class="empty-state">
+    <p>Nothing structural shifted from this chat.</p>
+    <p><small>The session log is saved (see your handover report), but no profile updates or new people were proposed.</small></p>
+  </div>
+{% else %}
+  <p class="muted">{{ cards | length }} thing{{ "" if cards | length == 1 else "s" }} stood out. (Read-only for now — interactive keep/edit/discard lands in a follow-up release.)</p>
+
+  {% for card in cards %}
+    <article class="diff-card">
+      <span class="verb {{ card.verb }}">{{ card.verb }}</span>
+      <h4>{{ card.title }}</h4>
+      {% if card.rationale %}
+        <p class="muted"><small>{{ card.rationale }}</small></p>
+      {% endif %}
+      <div style="white-space: pre-wrap;">{{ card.body }}</div>
+    </article>
+  {% endfor %}
+
+  {% if sidecar.summary_markdown %}
+    <details class="panel" style="margin-top: 16px;">
+      <summary><strong>Session log (full)</strong></summary>
+      <div style="white-space: pre-wrap; margin-top: 10px;">{{ sidecar.summary_markdown }}</div>
+    </details>
+  {% endif %}
+{% endif %}
+
+<p style="margin-top: 18px;">
+  <a href="/" role="button" class="primary">all good — done</a>
+  <a href="/session/{{ header.session_id }}" role="button" class="outline">back to chat</a>
+</p>
+
+{% endblock %}

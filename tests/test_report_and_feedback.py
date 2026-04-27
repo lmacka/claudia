@@ -21,6 +21,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
         str(Path(__file__).resolve().parents[1] / "app" / "prompts"),
     )
     (tmp_path / "context").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".setup_complete").write_text("test fixture\n", encoding="utf-8")
 
     import app.main as main_module
 

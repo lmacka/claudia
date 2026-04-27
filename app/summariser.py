@@ -10,6 +10,7 @@ Forced tool-use guarantees structured output — never returns text.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -436,6 +437,63 @@ def write_current_state(data_root: Path, contents: str) -> None:
     p.write_text(text, encoding="utf-8")
 
 
+def write_audit_sidecar(
+    data_root: Path,
+    session_id: str,
+    report: AuditorReport,
+) -> Path:
+    """Persist an AuditorReport as JSON next to session-logs/ for /review.
+
+    The session-log markdown is human prose; this sidecar is the structured
+    payload (people_updates, current_state_proposed, app_feedback) that the
+    memory-diff review screen renders as cards.
+    """
+    sidecars = data_root / "audit-sidecars"
+    sidecars.mkdir(parents=True, exist_ok=True)
+    path = sidecars / f"{session_id}.json"
+    payload = {
+        "session_id": session_id,
+        "title": report.title,
+        "summary_markdown": report.summary_markdown,
+        "current_state_proposed": report.current_state_proposed,
+        "current_state_rationale": report.current_state_rationale,
+        "app_feedback": [
+            {"quote": f.quote, "observation": f.observation} for f in report.app_feedback
+        ],
+        "people_updates": [
+            {
+                "action": u.action,
+                "name": u.name,
+                "id": u.id,
+                "category": u.category,
+                "summary": u.summary,
+                "relationship": u.relationship,
+                "aliases": list(u.aliases),
+                "important_context": list(u.important_context),
+                "tags": list(u.tags),
+                "append_note": u.append_note,
+            }
+            for u in report.people_updates
+        ],
+        "written_at": datetime.now(UTC).isoformat(),
+    }
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    tmp.replace(path)
+    return path
+
+
+def read_audit_sidecar(data_root: Path, session_id: str) -> dict | None:
+    """Load the sidecar JSON for /session/<id>/review. None if absent."""
+    p = data_root / "audit-sidecars" / f"{session_id}.json"
+    if not p.exists():
+        return None
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
 def append_app_feedback(
     data_root: Path,
     session_id: str,
@@ -465,6 +523,8 @@ def append_app_feedback(
 
 # Re-export for tests/usage.
 __all__ = [
+    "read_audit_sidecar",
+    "write_audit_sidecar",
     "AppFeedback",
     "AuditorError",
     "AuditorReport",

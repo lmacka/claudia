@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}claudia — settings{% endblock %}
+{% block content %}
+
+<nav class="nav" aria-label="primary">
+  <a href="/" class="brand">claudia</a>
+  <span class="spacer"></span>
+  {% if claudia_mode != "kid" %}
+    <a href="/library">library</a>
+    <a href="/people">people</a>
+    <a href="/report">report</a>
+  {% endif %}
+  <a href="/settings" aria-current="page">settings</a>
+</nav>
+
+<h1>settings</h1>
+
+<section class="panel">
+  <h2>theme</h2>
+  <p class="muted"><small>All themes are dark base with a pastel accent. Pick one to apply for next page load.</small></p>
+
+  {% set theme_swatches = [
+    ("sage",     "sage",          "#b8d4b8", "#8fb88f", "#232726"),
+    ("blush",    "blush",         "#f4c2c2", "#d49a9a", "#272323"),
+    ("lavender", "lavender",      "#c8b8e0", "#a690c2", "#25232a"),
+    ("amber",    "amber",         "#e6c89c", "#c4a87a", "#272623"),
+    ("contrast", "high contrast", "#ffffff", "#bbbbbb", "#000000"),
+  ] %}
+  <form method="post" action="/settings/theme">
+    <div class="swatch-row">
+      {% for key, label, c1, c2, c3 in theme_swatches %}
+        <label class="swatch{% if theme == key %} selected{% endif %}">
+          <input type="radio" name="theme" value="{{ key }}"
+                 style="position: absolute; opacity: 0;"
+                 {% if theme == key %}checked{% endif %}>
+          <div class="dot-row">
+            <span style="background: {{ c1 }};"></span>
+            <span style="background: {{ c2 }};"></span>
+            <span style="background: {{ c3 }};"></span>
+          </div>
+          {{ label }}
+        </label>
+      {% endfor %}
+    </div>
+    <p style="margin-top: 14px;">
+      <button type="submit" class="primary">save theme</button>
+      <small class="muted">Currently <strong>{{ theme }}</strong>.</small>
+    </p>
+  </form>
+</section>
+
+<section class="panel">
+  <h2>about</h2>
+  <p class="muted"><small>Application + chart versions and where this instance lives.</small></p>
+  <ul style="list-style: none; padding-left: 0; margin: 0;">
+    <li><strong>mode:</strong> {{ claudia_mode }}</li>
+    <li><strong>display name:</strong> {{ display_name or "(unset)" }}</li>
+    {% if claudia_mode == "kid" %}<li><strong>parent name (in copy):</strong> {{ parent_display_name }}</li>{% endif %}
+  </ul>
+</section>
+
+{% endblock %}

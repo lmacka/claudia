@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}claudia — setup, context{% endblock %}
+{% block content %}
+
+<nav class="nav" aria-label="primary">
+  <span class="brand">claudia</span>
+  <span class="spacer"></span>
+  <span class="muted"><small>first-run setup</small></span>
+</nav>
+
+{% if claudia_mode == "kid" %}
+  <h1>Tell claudia about {{ display_name or "them" }}.</h1>
+  <p class="muted">Drop in everything that helps claudia know them as a person — psych assessments, IEP/EHCP/NDIS plans, school reports, journals, transcripts, screenshots. The clearer you are now, the better claudia is from day one.</p>
+{% else %}
+  <h1>Tell claudia about you.</h1>
+  <p class="muted">Drop in any documents you want claudia to know about. Psych assessments, journals, important emails, screenshots, plans, reports. You can curate later.</p>
+{% endif %}
+
+<div class="steps">
+  <div class="step done"><span class="num">&check;</span>basics</div>
+  <div class="step active"><span class="num">2</span>add context</div>
+  <div class="step"><span class="num">3</span>recap &amp; ready</div>
+</div>
+
+<section class="panel">
+  <h3>Drop documents</h3>
+  <p class="muted"><small>Each upload runs through extraction (PDF, DOCX, image OCR, chat-export sniff). Visit <a href="/library">/library</a> for the full upload UI; finish setup here when you're done.</small></p>
+
+  <p>
+    <a href="/library" target="_blank" role="button">open /library in a new tab &rarr;</a>
+  </p>
+
+  {% if docs %}
+    <p class="muted" style="margin-top: 12px;"><strong>{{ docs | length }} document{{ "" if docs | length == 1 else "s" }}</strong> in the library so far:</p>
+    <ul class="session-list">
+      {% for d in docs %}
+        <li><a href="/library#{{ d.id }}">
+          <div class="session-list-main">
+            <strong>{{ d.title }}</strong>
+            <small class="muted">{{ d.kind }}{% if d.tags %} · {{ d.tags | join(', ') }}{% endif %}</small>
+          </div>
+          {% if d.verification %}
+            <span class="dot {% if d.verification == 'ok' %}green{% elif d.verification == 'warn' %}amber{% else %}red{% endif %}"></span>
+          {% endif %}
+        </a></li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <div class="empty-state" style="margin-top: 12px;">
+      <p>No documents in the library yet.</p>
+      <p><small>You can skip this step and add documents later.</small></p>
+    </div>
+  {% endif %}
+</section>
+
+<form method="post" action="/setup/2">
+  <section class="panel">
+    <h3>Profile {% if claudia_mode == "kid" %}of {{ display_name }}{% endif %}</h3>
+    <p class="muted"><small>Edit any of this. Claudia uses these as the starting point — they get refined by the auditor over time as sessions accumulate.</small></p>
+
+    <label for="section_who">One paragraph: {% if claudia_mode == "kid" %}who they are right now{% else %}who you are right now{% endif %}</label>
+    <textarea id="section_who" name="section_who" rows="4">{{ data.section_who or '' }}</textarea>
+
+    <label for="section_stressors">{% if claudia_mode == "kid" %}What they're navigating right now{% else %}Active stressors right now{% endif %}</label>
+    <textarea id="section_stressors" name="section_stressors" rows="3">{{ data.section_stressors or '' }}</textarea>
+
+    <label for="section_never">What claudia should never do</label>
+    <textarea id="section_never" name="section_never" rows="3">{{ data.section_never or '' }}</textarea>
+
+    <label for="section_for">{% if claudia_mode == "kid" %}What claudia is for, in their life{% else %}What you want claudia to do for you{% endif %}</label>
+    <textarea id="section_for" name="section_for" rows="3">{{ data.section_for or '' }}</textarea>
+  </section>
+
+  <p style="margin-top: 18px;">
+    <a href="/setup/1" role="button" class="outline">&larr; back</a>
+    <button type="submit" class="primary big">next: review and finish &rarr;</button>
+  </p>
+</form>
+
+{% endblock %}

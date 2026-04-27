@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block title %}claudia — setup, recap{% endblock %}
+{% block content %}
+
+<nav class="nav" aria-label="primary">
+  <span class="brand">claudia</span>
+  <span class="spacer"></span>
+  <span class="muted"><small>first-run setup</small></span>
+</nav>
+
+<h1>Almost there.</h1>
+<p class="muted">Here's what claudia knows so far. Add anything else now or come back later via <a href="/library">/library</a> + <a href="/people">/people</a>.</p>
+
+<div class="steps">
+  <div class="step done"><span class="num">&check;</span>basics</div>
+  <div class="step done"><span class="num">&check;</span>add context</div>
+  <div class="step active"><span class="num">3</span>recap &amp; ready</div>
+</div>
+
+<section class="panel">
+  <h3>Recap</h3>
+  <ul style="margin: 8px 0 0 20px;">
+    <li><strong>{{ display_name or '(no display name)' }}</strong>
+      {% if data.dob %}, DOB {{ data.dob }}{% endif %}
+      {% if data.country or data.region %}
+        — {{ ((data.region + ', ') if data.region else '') ~ (data.country or 'AU') }}
+      {% endif %}
+      &middot; <a href="/setup/1">edit</a>
+    </li>
+    <li>
+      {{ docs | length }} document{{ "" if docs | length == 1 else "s" }} loaded
+      &middot; <a href="/library">view library</a>
+    </li>
+    <li>
+      Profile drafted, {{ [data.section_who, data.section_stressors, data.section_never, data.section_for] | select | list | length }}
+      of 4 sections filled &middot; <a href="/setup/2">edit</a>
+    </li>
+    <li>Theme: {{ theme }} &middot; <a href="/settings">change</a></li>
+  </ul>
+</section>
+
+<section class="panel">
+  <h3>What claudia will do{% if claudia_mode == "kid" %} for {{ display_name }}{% else %} for you{% endif %}</h3>
+  <ul style="margin: 8px 0 0 20px;">
+    {% if claudia_mode == "kid" %}
+      <li><strong>Be honest about what it is.</strong> Never pretends to be human. Won't fawn. Won't push back unless asked.</li>
+      <li><strong>Surface real-people help</strong> if {{ display_name }} brings up something dangerous — and keep the conversation going.</li>
+      <li><strong>Help with impulse-checks.</strong> "am I about to make this worse?" / "help me reply without sounding cooked".</li>
+      <li><strong>Translate adult communication</strong> when {{ display_name }} is decoding a confusing message.</li>
+      <li><strong>You see themes, not raw chats.</strong> /admin/review summarises trends — you don't read what {{ display_name }} typed.</li>
+    {% else %}
+      <li><strong>Hold a real conversation.</strong> A sounding board that pushes back, validates when warranted, helps you see patterns.</li>
+      <li><strong>Remember what matters.</strong> The auditor writes a session log + updates your profile after each chat — you can review what it learnt.</li>
+      <li><strong>Help you draft difficult messages</strong> without trigger words.</li>
+      <li><strong>Generate handover briefings</strong> for your real therapist (or GP, or lawyer) at /report.</li>
+    {% endif %}
+  </ul>
+</section>
+
+{% if claudia_mode == "kid" %}
+<section class="panel">
+  <h3>Hand off</h3>
+  <p>Give {{ display_name }} the URL of this instance. They'll log in at <code>/</code>, set their own password, and start chatting. Your parent password (the basic-auth on <code>/admin</code>) stays separate.</p>
+</section>
+{% endif %}
+
+<form method="post" action="/setup/3">
+  <p style="margin-top: 18px;">
+    <a href="/setup/2" role="button" class="outline">&larr; back</a>
+    <button type="submit" class="primary big">
+      {% if claudia_mode == "kid" %}done — show me the parent dashboard{% else %}done — take me to claudia{% endif %}
+    </button>
+  </p>
+</form>
+
+{% endblock %}
