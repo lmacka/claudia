@@ -18,6 +18,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install system deps for extractors
+        # Mirrors what the runtime Dockerfile installs. PDF tests rely on
+        # pdf2image → pdfinfo (poppler); .doc tests use libreoffice via
+        # python-docx fallback. Without these the extractor tests fail.
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends \
+            poppler-utils libreoffice-core libreoffice-writer
+
       - name: Install uv
         uses: astral-sh/setup-uv@v3
         with:

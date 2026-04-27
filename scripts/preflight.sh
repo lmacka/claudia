@@ -12,6 +12,16 @@ cd "$(dirname "$0")/.."
 
 step() { printf "\n=== %s ===\n" "$*"; }
 
+# System deps that extractor tests need at runtime. Missing these locally
+# means PDF/.doc tests will fail — same as in CI. Warn loudly; the test step
+# will surface the actual missing-binary errors.
+for bin in pdfinfo libreoffice; do
+  if ! command -v "$bin" >/dev/null 2>&1; then
+    echo "WARN: ${bin} not on PATH. Some extractor tests will fail. Install:"
+    echo "  sudo apt-get install -y poppler-utils libreoffice-core libreoffice-writer"
+  fi
+done
+
 step "ruff lint"
 uv run ruff check app tests
 
