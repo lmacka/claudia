@@ -130,7 +130,7 @@ Documented in `docs/safety.md` (v1 dev-mode section, top of file).
 | 7b | Re-skin existing templates against variant-C language | ✓ done | v0.3.0 — home, chat, login, library, people, admin/home, admin/review re-skinned. Variant-C locks: chip panel removed, mood widget removed at start AND end (kid), persistent crisis footer dropped, ··· menu added, rotating greetings + composer placeholders, inline retry chip on send fail. |
 | 7c | Build missing templates | new | `/memory-diff`, `/settings`, `/setup`x2 (library + people already done in step 3) |
 | 7d | A11y baseline (44px targets, ARIA, focus-visible, contrast) | ✓ done | v0.3.0 — min-height 40-44px on buttons/inputs, ARIA on ··· kebab, focus-visible outline, aria-current on nav, touch-friendly min-min sizes throughout |
-| 8 | OCR-discard kid attachment flow + people inline-prompt | depends on 3 | |
+| 8 | OCR-discard kid attachment flow + people inline-prompt | ✓ done | v0.4.0 — POST /session/{id}/kid-attach: sync vision OCR via ImageExtractor, original image deleted, user-msg + ocr-tool-card + assistant-reply rendered together. People inline-prompt simplified to dialogue (companion uses lookup_person/search_people, asks the kid; auditor records via people_updates at session end — kid-mode write_tools_disabled stays). 10 new tests covering happy path + 415/413/400/404/410/404-in-adult. |
 | 9 | README + first-deploy walkthrough | | |
 | 10a | Red-team scenario fixture format | ship-blocker | YAML schema for {input, expected_classifier_fire, expected_judge_score, category} |
 | 10b | Write 50 scenarios | ship-blocker | 10 each across 5 categories from `docs/safety.md` |

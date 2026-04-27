@@ -1573,6 +1573,193 @@ async def session_paste(session_id: str, request: Request, _: str = Depends(requ
 
 
 # ---------------------------------------------------------------------------
+# Kid-mode OCR-discard attachment (Step 8).
+#
+# Variant-C: kid uploads a screenshot, the server runs vision OCR
+# synchronously, the original file is deleted, the transcript is rendered as
+# a tool-card in chat, and then the companion replies. No library entry; no
+# residual image. The companion uses list_people / lookup_person tools to
+# spot unknown names from the OCR text and asks the kid in dialogue.
+# ---------------------------------------------------------------------------
+
+_KID_ATTACH_MAX_BYTES = 10 * 1024 * 1024  # 10 MB — kid screenshots, not big PDFs.
+_KID_ATTACH_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".heic"}
+
+
+@app.post("/session/{session_id}/kid-attach", response_class=HTMLResponse)
+async def session_kid_attach(
+    session_id: str,
+    request: Request,
+    _: str = Depends(require_auth),
+) -> HTMLResponse:
+    """Kid-only image attachment with sync OCR + immediate file deletion."""
+    cfg = state.cfg
+    if not cfg.is_kid:
+        raise HTTPException(404, "kid-attach is kid-mode only")
+
+    try:
+        header = state.store.load_header(session_id)
+    except FileNotFoundError:
+        raise HTTPException(404, "Session not found")
+    if header.status != "active":
+        raise HTTPException(410, "Session is ended")
+
+    form = await request.form()
+    upload_obj = form.get("file")
+    if not hasattr(upload_obj, "filename") or not upload_obj.filename:  # type: ignore[union-attr]
+        raise HTTPException(400, "no file field")
+    user_text = str(form.get("content", "")).strip()
+
+    from fastapi import UploadFile
+
+    file: UploadFile = upload_obj  # type: ignore[assignment]
+    filename = _safe_filename(file.filename or "image.png")
+    suffix = Path(filename).suffix.lower() or ".png"
+    if suffix not in _KID_ATTACH_EXTS:
+        raise HTTPException(415, f"unsupported image type: {suffix}")
+
+    body = await file.read()
+    if len(body) > _KID_ATTACH_MAX_BYTES:
+        raise HTTPException(413, f"image too large (max {_KID_ATTACH_MAX_BYTES // (1024*1024)} MB)")
+    if not body:
+        raise HTTPException(400, "empty upload")
+
+    # Stage the file under the session dir; we will delete it after OCR.
+    staging_dir = cfg.data_root / "kid-attach-staging"
+    staging_dir.mkdir(parents=True, exist_ok=True)
+    staged_name = f"{session_id}-{secrets.token_hex(4)}-{filename}"
+    staged = staging_dir / staged_name
+    staged.write_bytes(body)
+
+    # Synchronous OCR via the existing ImageExtractor.
+    extractor = state.extractor_registry.pick(staged, file.content_type or "image/png")
+    if extractor is None or extractor.kind != "image":
+        try:
+            staged.unlink(missing_ok=True)
+        finally:
+            pass
+        raise HTTPException(500, "no image extractor available")
+
+    ocr_text = ""
+    ocr_failed = False
+    try:
+        if cfg.is_local:
+            ocr_text = f"[local-mock OCR of {filename}]"
+        else:
+            result = extractor.extract(staged)
+            ocr_text = (result.extracted_md or "").strip()
+    except Exception as e:  # noqa: BLE001
+        log.exception("kid_attach.ocr_failed", filename=filename, error=str(e))
+        ocr_failed = True
+    finally:
+        # OCR-DISCARD: kill the original. The transcript is what the chat keeps.
+        try:
+            staged.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    # Append the visible turns to the chat log.
+    user_marker = f"[attached: {filename}]"
+    user_visible = f"{user_marker}\n\n{user_text}" if user_text else user_marker
+    state.store.append_message(
+        session_id,
+        Message(
+            role="user",
+            content=user_visible,
+            meta={"kid_attach": True, "filename": filename},
+        ),
+    )
+    state.store.append_message(
+        session_id,
+        Message(
+            role="system_event",
+            content=ocr_text if not ocr_failed else "",
+            meta={
+                "kind": "kid_attach_ocr",
+                "filename": filename,
+                "failed": ocr_failed,
+            },
+        ),
+    )
+    state.store.append_event(
+        session_id,
+        "kid_attach",
+        {"filename": filename, "ocr_chars": len(ocr_text), "failed": ocr_failed},
+    )
+
+    # Build companion turn. The OCR text is folded into the user message we
+    # send to the model so the model has the screenshot's content in context.
+    if ocr_failed:
+        synth_user = (
+            f"[I attached an image: {filename}, but the OCR step failed. "
+            f"Tell me you couldn't read it and ask me to type out the relevant part.]\n\n"
+            f"{user_text}"
+        ).strip()
+    else:
+        synth_user = (
+            f"[I attached an image: {filename}. Here's what you read from it (vision OCR — original image discarded):]\n\n"
+            f"{ocr_text or '(no text was found in the image)'}\n\n"
+            f"{user_text or '(no other text from me — figure out what I want from context)'}"
+        )
+
+    blocks = state.loader.assemble(frame_tag="")
+    if cfg.is_local:
+        reply_text = f"[local mock reply] OCR'd {filename} ({len(ocr_text)} chars). user said: {user_text!r}"
+        loop_result = None
+    else:
+        assert state.claude is not None
+        history: list[dict] = []
+        prior = state.store.load_messages(session_id)
+        # Drop the two messages we just appended (user + system_event); we
+        # rebuild the user turn with the synthesised OCR-folded version.
+        for m in prior[:-2]:
+            if m.role not in ("user", "assistant"):
+                continue
+            raw_blocks = m.meta.get("blocks") if m.meta else None
+            if raw_blocks:
+                history.append({"role": m.role, "content": raw_blocks})
+            else:
+                history.append({"role": m.role, "content": m.content})
+        history.append({"role": "user", "content": synth_user})
+        tools_reg = _build_tool_registry(cfg, session_id=session_id)
+        loop_result = await asyncio.to_thread(
+            tool_loop_mod.run_tool_loop,
+            state.claude,
+            header.model or SONNET,
+            blocks,
+            history,
+            tools_reg,
+        )
+        reply_text = loop_result.text or "(no response)"
+        for tc in loop_result.tool_calls:
+            state.store.append_event(
+                session_id,
+                "tool_call",
+                {"name": tc.name, "arguments": tc.arguments, "summary": tc.result_summary[:200]},
+            )
+
+    assistant_msg = _persist_turns_to_store(
+        session_id=session_id,
+        local_mode=cfg.is_local,
+        loop_result=loop_result if not cfg.is_local else None,
+        fallback_text=reply_text,
+    )
+
+    return state.templates.TemplateResponse(
+        request,
+        "fragments/kid_attach_pair.html",
+        {
+            "filename": filename,
+            "user_text": user_text,
+            "ocr_text": ocr_text,
+            "ocr_failed": ocr_failed,
+            "assistant_message": assistant_msg,
+            "header": header,
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 

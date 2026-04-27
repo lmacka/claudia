@@ -81,6 +81,12 @@
     <button type="button" class="outline" onclick="claudiaPasteChat('{{ header.session_id }}')">
       paste chat
     </button>
+    {% else %}
+    <label class="file-upload-btn" title="Attach a screenshot — original image is deleted after I read it">
+      <input type="file" id="kid-uploader" accept="image/*" style="display:none"
+             onchange="claudiaKidAttach(this, '{{ header.session_id }}')">
+      + attach
+    </label>
     {% endif %}
     <button type="submit" class="primary">send</button>
     <small class="muted htmx-indicator">thinking…</small>
@@ -176,6 +182,69 @@
       if (form && form.requestSubmit) form.requestSubmit();
     });
     pending.insertAdjacentElement('afterend', chip);
+  }
+
+  async function claudiaKidAttach(input, sessionId) {
+    const f = input.files && input.files[0];
+    if (!f) return;
+    const ta = document.getElementById('content');
+    const text = ta ? ta.value.trim() : '';
+
+    // Optimistic echo so the screen reflects the action immediately.
+    const msgs = document.getElementById('messages');
+    const pendingUser = document.createElement('article');
+    pendingUser.className = 'msg user msg-pending';
+    pendingUser.setAttribute('data-pending-attach', '1');
+    pendingUser.innerHTML =
+      '<div class="who">' + {{ (display_name or "you") | tojson }} + '</div>' +
+      '<div class="msg-body">' +
+      '<div class="msg tool dashed" style="margin: 0 0 6px 0;"><strong>attaching:</strong> ' +
+      f.name.replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c])) +
+      '</div>' +
+      (text ? text.replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c])) : '') +
+      '</div>';
+    if (msgs) msgs.appendChild(pendingUser);
+    const status = document.createElement('div');
+    status.className = 'status-line';
+    status.style.margin = '4px 0 8px';
+    status.textContent = 'reading screenshot… transcribing text…';
+    if (msgs) msgs.appendChild(status);
+    claudiaScrollBottom();
+
+    const fd = new FormData();
+    fd.append('file', f);
+    fd.append('content', text);
+    try {
+      const res = await fetch('/session/' + sessionId + '/kid-attach', { method: 'POST', body: fd });
+      if (!res.ok) {
+        pendingUser.classList.remove('msg-pending');
+        const errText = await res.text().catch(() => '');
+        const chip = document.createElement('div');
+        chip.className = 'retry-chip';
+        const errMsg = res.status === 413 ? 'image too big' :
+                       res.status === 415 ? 'not an image type I can read' :
+                       'didn’t go through';
+        chip.innerHTML = '<span>' + errMsg + '.</span>';
+        if (status.parentNode) status.remove();
+        pendingUser.insertAdjacentElement('afterend', chip);
+        return;
+      }
+      const html = await res.text();
+      // Remove pending echo + status; the response includes the real user msg.
+      pendingUser.remove();
+      status.remove();
+      if (msgs) msgs.insertAdjacentHTML('beforeend', html);
+      if (ta) ta.value = '';
+      claudiaScrollBottom();
+    } catch (e) {
+      pendingUser.classList.remove('msg-pending');
+      status.remove();
+      const chip = document.createElement('div');
+      chip.className = 'retry-chip';
+      chip.textContent = 'didn’t go through.';
+      pendingUser.insertAdjacentElement('afterend', chip);
+    }
+    input.value = '';
   }
 
   async function claudiaUpload(input) {

@@ -1,0 +1,33 @@
+{# Kid OCR-discard attachment turn: user-msg-with-attachment + ocr-tool-card + assistant-reply #}
+{% set _user_label = (display_name or "you") %}
+<article class="msg user">
+  <div class="who">{{ _user_label }}</div>
+  <div class="msg-body">
+    <div class="msg tool dashed" style="margin: 0 0 6px 0;">
+      <strong>attached:</strong> {{ filename }}
+    </div>
+    {% if user_text %}{{ user_text }}{% endif %}
+  </div>
+</article>
+
+{% if ocr_failed %}
+<article class="msg tool dashed">
+  <div class="who">claudia — couldn't read the screenshot</div>
+  <div class="msg-body">
+    <em>OCR didn't return any text. Could you type out the part you wanted me to see?</em>
+  </div>
+</article>
+{% else %}
+<article class="msg tool">
+  <div class="who">claudia — what I read from the screenshot</div>
+  <div class="msg-body">{{ ocr_text or "(no text was found in the image)" }}</div>
+  <div class="muted" style="font-size: 11px; margin-top: 6px;">
+    <em>(original image discarded after reading. The text is kept with this chat.)</em>
+  </div>
+</article>
+{% endif %}
+
+<article class="msg bot">
+  <div class="who">claudia</div>
+  <div class="msg-body">{{ assistant_message.content }}</div>
+</article>
