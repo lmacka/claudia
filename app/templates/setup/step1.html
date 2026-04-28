@@ -40,7 +40,7 @@
   </section>
 
   <section class="panel">
-    <h3>Where {% if claudia_mode == "kid" %}are you{% else %}are you{% endif %}?</h3>
+    <h3>Where {% if claudia_mode == "kid" %}does {{ display_name or "they" }} live{% else %}are you{% endif %}?</h3>
     <p class="muted"><small>Used for time zone, crisis-line numbers, and "now" awareness in chat.</small></p>
 
     <label for="country">country</label>
