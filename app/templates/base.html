@@ -6,7 +6,7 @@
   <meta name="color-scheme" content="dark">
   <title>{% block title %}claudia{% endblock %}</title>
   <link rel="stylesheet" href="/static/claudia.css?v={{ asset_version }}">
-  <script src="https://unpkg.com/htmx.org@2.0.4" integrity="sha384-HGfztofotfshcF7+8n44JQL2oJmowVChPTg48S+jvZoztPfvwD79OC/LTtG6dMp+" crossorigin="anonymous"></script>
+  <script src="/static/htmx-2.0.4.min.js?v={{ asset_version }}"></script>
 </head>
 <body class="mode-{{ claudia_mode }}">
   {% block content %}{% endblock %}
