@@ -3,6 +3,19 @@
 > Auto-loaded by Claude Code when you `cd` into this repo.
 > READ THIS BEFORE DOING ANYTHING.
 
+## QA testing — DO NOT SKIP
+
+Before claiming you tested anything, read [`docs/qa-protocol.md`](docs/qa-protocol.md)
+in full. The 2026-04-30 session shipped v0.6.0 with five bugs that a real
+browser would have surfaced in minutes (theme picker doesn't apply across
+pages, hardcoded "your dad" copy that's tone-deaf in a step-parent family,
+Envoy upstream-reset on session end as the kid, no Enter-to-send / Shift-
+Enter-for-newline, no auto-scroll on new messages). The protocol exists
+because a green status code is not a passing test. Drive the actual flow
+in `gstack browse`, press the actual keys, read the actual DOM. The list
+of bugs the next session inherits is in the protocol file under "Open
+bugs from the v0.6.0 ship" — start there.
+
 ## What you're looking at
 
 `claudia` is a **fork of robo-therapist** (`~/git/lmacka/robo-therapist`),
