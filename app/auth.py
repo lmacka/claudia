@@ -132,6 +132,94 @@ def new_kid_session_token() -> str:
     return secrets.token_urlsafe(32)
 
 
+_KID_SESSIONS_FILE = ".credentials/kid_sessions.json"
+
+
+class KidSessionStore:
+    """Persistent kid session token → display_name map.
+
+    Earlier in v0.5 the active sessions lived in a process-local dict, so
+    every pod restart logged the kid out even though their cookie still had
+    23 hours of life. Now we mirror the dict to ``/data/.credentials/
+    kid_sessions.json`` on every mutation, prune expired entries on load,
+    and rehydrate on startup.
+
+    Atomic writes (tempfile + rename) keep the file consistent under crash
+    or concurrent access. The file is mode 0600 so only the pod user can
+    read it. Adult mode never instantiates this.
+    """
+
+    def __init__(self, data_root: Path) -> None:
+        self.path = data_root / _KID_SESSIONS_FILE
+        self._sessions: dict[str, dict] = {}
+        self._load()
+
+    def _load(self) -> None:
+        if not self.path.exists():
+            return
+        import json as _json
+
+        try:
+            raw = _json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, _json.JSONDecodeError) as e:
+            log.warning("kid_sessions.load_failed", error=str(e))
+            return
+        if not isinstance(raw, dict):
+            return
+        now = time.time()
+        for token, entry in raw.items():
+            if not isinstance(entry, dict):
+                continue
+            created_at = entry.get("created_at")
+            if not isinstance(created_at, (int, float)):
+                continue
+            if now - created_at > KID_COOKIE_TTL_SECONDS:
+                continue
+            self._sessions[token] = {
+                "display_name": str(entry.get("display_name", "kid")),
+                "created_at": float(created_at),
+            }
+
+    def _persist(self) -> None:
+        import json as _json
+
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_suffix(".tmp")
+        tmp.write_text(_json.dumps(self._sessions), encoding="utf-8")
+        try:
+            tmp.chmod(0o600)
+        except OSError:
+            pass
+        tmp.replace(self.path)
+
+    def add(self, token: str, display_name: str) -> None:
+        self._sessions[token] = {
+            "display_name": display_name,
+            "created_at": time.time(),
+        }
+        self._persist()
+
+    def get(self, token: str) -> str | None:
+        """Returns the kid's display_name if the token is valid, else None.
+
+        Tokens past KID_COOKIE_TTL_SECONDS are pruned lazily on lookup.
+        """
+        entry = self._sessions.get(token)
+        if entry is None:
+            return None
+        if time.time() - entry["created_at"] > KID_COOKIE_TTL_SECONDS:
+            self.remove(token)
+            return None
+        return entry["display_name"]
+
+    def remove(self, token: str) -> None:
+        if self._sessions.pop(token, None) is not None:
+            self._persist()
+
+    def __contains__(self, token: str) -> bool:
+        return self.get(token) is not None
+
+
 # ---------------------------------------------------------------------------
 # IP rate limiter
 # ---------------------------------------------------------------------------

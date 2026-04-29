@@ -131,7 +131,7 @@ class AppState:
     templates: Jinja2Templates
     app_root: Path
     rate_limiter: auth_mod.IPRateLimiter
-    kid_sessions: dict[str, str]  # cookie token -> kid_session_id (in-memory)
+    kid_session_store: auth_mod.KidSessionStore  # token -> kid display_name, persisted
     library: Library
     extractor_registry: Any
     status_bus: StatusBus
@@ -199,7 +199,7 @@ async def lifespan(app: FastAPI):
     )
     state.claude = None if cfg.is_local else ClaudeClient(api_key=cfg.anthropic_api_key)
     state.rate_limiter = auth_mod.IPRateLimiter()
-    state.kid_sessions = {}
+    state.kid_session_store = auth_mod.KidSessionStore(cfg.data_root)
 
     state.library = Library(cfg.data_root / "library")
     if state.claude is not None:
@@ -311,8 +311,10 @@ def require_auth(
 
     if cfg.is_kid:
         cookie = request.cookies.get(auth_mod.KID_COOKIE_NAME, "")
-        if cookie and cookie in state.kid_sessions:
-            return state.kid_sessions[cookie]
+        if cookie:
+            display = state.kid_session_store.get(cookie)
+            if display is not None:
+                return display
         # No valid cookie — redirect to /login. We raise an exception
         # the caller transforms into a redirect.
         raise HTTPException(
@@ -526,7 +528,7 @@ async def login_submit(request: Request) -> Response:
 
     state.rate_limiter.reset(ip)
     token = auth_mod.new_kid_session_token()
-    state.kid_sessions[token] = cfg.display_name or "kid"
+    state.kid_session_store.add(token, cfg.display_name or "kid")
     log.info("kid_auth.login_success", display_name=cfg.display_name)
 
     resp = RedirectResponse(url="/", status_code=303)
@@ -548,7 +550,7 @@ async def logout(request: Request) -> Response:
     if cfg.is_kid:
         cookie = request.cookies.get(auth_mod.KID_COOKIE_NAME, "")
         if cookie:
-            state.kid_sessions.pop(cookie, None)
+            state.kid_session_store.remove(cookie)
     resp = RedirectResponse(url="/login", status_code=303)
     resp.delete_cookie(auth_mod.KID_COOKIE_NAME, path="/")
     return resp

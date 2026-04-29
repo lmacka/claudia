@@ -114,3 +114,53 @@ def test_rate_limiter_window_expiry() -> None:
     assert not rl.check("a")
     time.sleep(1.2)
     assert rl.check("a")
+
+
+# ---------------------------------------------------------------------------
+# KidSessionStore — persistent kid login tokens
+# ---------------------------------------------------------------------------
+
+
+def test_kid_session_add_get_remove(tmp_path: Path) -> None:
+    store = auth_mod.KidSessionStore(tmp_path)
+    assert store.get("nope") is None
+    store.add("token-a", "Jasper")
+    assert store.get("token-a") == "Jasper"
+    assert "token-a" in store
+    store.remove("token-a")
+    assert store.get("token-a") is None
+    assert "token-a" not in store
+
+
+def test_kid_session_persists_across_restart(tmp_path: Path) -> None:
+    """The whole point: a pod restart must NOT log the kid out."""
+    s1 = auth_mod.KidSessionStore(tmp_path)
+    s1.add("token-restart", "Jasper")
+    s2 = auth_mod.KidSessionStore(tmp_path)
+    assert s2.get("token-restart") == "Jasper"
+
+
+def test_kid_session_expired_token_pruned(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = auth_mod.KidSessionStore(tmp_path)
+    store.add("token-old", "Jasper")
+    # Backdate the entry past TTL.
+    real_ttl = auth_mod.KID_COOKIE_TTL_SECONDS
+    fake_now = time.time() + real_ttl + 60
+    monkeypatch.setattr(auth_mod.time, "time", lambda: fake_now)
+    assert store.get("token-old") is None
+
+
+def test_kid_session_file_mode_0600(tmp_path: Path) -> None:
+    store = auth_mod.KidSessionStore(tmp_path)
+    store.add("t", "Jasper")
+    mode = store.path.stat().st_mode & 0o777
+    assert mode == 0o600
+
+
+def test_kid_session_load_skips_corrupt_entries(tmp_path: Path) -> None:
+    """Garbage in the file (or older format) shouldn't crash startup."""
+    creds = tmp_path / ".credentials"
+    creds.mkdir(parents=True)
+    (creds / "kid_sessions.json").write_text("not valid json", encoding="utf-8")
+    store = auth_mod.KidSessionStore(tmp_path)  # no exception
+    assert store.get("anything") is None
