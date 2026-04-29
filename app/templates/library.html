@@ -2,13 +2,28 @@
 {% block title %}claudia — library{% endblock %}
 {% block content %}
 
+{% if claudia_mode == "kid" %}
+<nav class="nav" aria-label="primary">
+  <a href="/admin" class="brand">claudia <small class="muted">— parent admin</small></a>
+  <span class="spacer"></span>
+  <a href="/admin/review">review</a>
+  <a href="/library" aria-current="page">library</a>
+  <a href="/people">people</a>
+  <a href="/settings">settings</a>
+  <form method="post" action="/logout" style="margin:0;">
+    <button type="submit" class="outline">log out</button>
+  </form>
+</nav>
+{% else %}
 <nav class="nav" aria-label="primary">
   <a href="/" class="brand">claudia</a>
   <span class="spacer"></span>
   <a href="/library" aria-current="page">library</a>
   <a href="/people">people</a>
   <a href="/report">report</a>
+  <a href="/settings">settings</a>
 </nav>
+{% endif %}
 
 <h1>library</h1>
 <p class="muted">Documents claudia knows about. PDFs, screenshots, chat exports, pasted text.</p>
