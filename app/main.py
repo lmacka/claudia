@@ -1413,6 +1413,8 @@ def _run_audit_and_apply(session_id: str) -> None:
 
 @app.get("/report", response_class=HTMLResponse)
 async def report_form(request: Request, _: str = Depends(require_auth)) -> HTMLResponse:
+    if not state.cfg.is_adult:
+        raise HTTPException(404, "report is adult-mode only")
     last_export_ts = _read_last_export_ts(state.cfg.data_root)
     today = date.today()
     default_start = last_export_ts.date() if last_export_ts else (today - timedelta(days=30))
@@ -1429,6 +1431,8 @@ async def report_form(request: Request, _: str = Depends(require_auth)) -> HTMLR
 
 @app.post("/report")
 async def report_submit(request: Request, _: str = Depends(require_auth)) -> Response:
+    if not state.cfg.is_adult:
+        raise HTTPException(404, "report is adult-mode only")
     from fastapi.responses import FileResponse
 
     form = await request.form()
