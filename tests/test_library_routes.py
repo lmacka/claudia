@@ -150,7 +150,13 @@ def test_library_doc_detail_renders(client: TestClient):
     assert m, "no doc row found in listing"
     doc_id = m.group(1)
 
-    r = client.get(f"/library/{doc_id}")
+    # Direct nav 303-redirects to /library#doc_id (fragment outside HTMX
+    # context renders unstyled). HTMX requests still get the fragment.
+    r_direct = client.get(f"/library/{doc_id}", follow_redirects=False)
+    assert r_direct.status_code == 303
+    assert r_direct.headers["location"] == f"/library#{doc_id}"
+
+    r = client.get(f"/library/{doc_id}", headers={"HX-Request": "true"})
     assert r.status_code == 200
     assert "the quick brown fox" in r.text
     assert "text_verbatim" in r.text  # extractor name surfaces

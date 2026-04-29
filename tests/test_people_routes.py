@@ -100,20 +100,33 @@ def test_people_new_rejects_invalid_category(client: TestClient):
 # ---------------------------------------------------------------------------
 
 
+_HX = {"HX-Request": "true"}
+
+
 def test_people_detail_renders(client: TestClient):
     client.post("/people/new", data={"name": "Sofia"}, follow_redirects=False)
     listing = client.get("/people")
     pid = _row_id(listing.text)
 
-    r = client.get(f"/people/{pid}")
+    r = client.get(f"/people/{pid}", headers=_HX)
     assert r.status_code == 200
     assert "Sofia" in r.text
     # Detail fragment has form fields
     assert 'name="aliases"' in r.text
 
 
+def test_people_detail_redirects_on_direct_nav(client: TestClient):
+    client.post("/people/new", data={"name": "Sofia"}, follow_redirects=False)
+    listing = client.get("/people")
+    pid = _row_id(listing.text)
+    # No HX-Request header → bounce to the index anchor.
+    r = client.get(f"/people/{pid}", follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"] == f"/people#{pid}"
+
+
 def test_people_detail_404(client: TestClient):
-    r = client.get("/people/no-such")
+    r = client.get("/people/no-such", headers=_HX)
     assert r.status_code == 404
 
 
@@ -136,7 +149,7 @@ def test_people_update_meta(client: TestClient):
     )
     assert r.status_code == 303
 
-    detail = client.get(f"/people/{pid}")
+    detail = client.get(f"/people/{pid}", headers=_HX)
     assert "english class friend" in detail.text
     assert "friend, school" in detail.text
 
@@ -160,7 +173,7 @@ def test_people_replace_notes(client: TestClient):
     )
     assert r.status_code == 303
 
-    detail = client.get(f"/people/{pid}")
+    detail = client.get(f"/people/{pid}", headers=_HX)
     assert "fresh notes content" in detail.text
 
 
@@ -191,12 +204,12 @@ def test_people_link_doc_then_unlink(client: TestClient):
     r = client.post(f"/people/{pid}/link", data={"doc_id": doc_id}, follow_redirects=False)
     assert r.status_code == 303
 
-    detail = client.get(f"/people/{pid}")
+    detail = client.get(f"/people/{pid}", headers=_HX)
     assert doc_id in detail.text
 
     r = client.post(f"/people/{pid}/unlink", data={"doc_id": doc_id}, follow_redirects=False)
     assert r.status_code == 303
-    detail = client.get(f"/people/{pid}")
+    detail = client.get(f"/people/{pid}", headers=_HX)
     assert doc_id not in detail.text
 
 

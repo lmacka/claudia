@@ -1761,7 +1761,7 @@ async def connect_gmail(request: Request, _: str = Depends(require_auth)) -> HTM
     gcfg = _google_cfg(state.cfg)
     if not gcfg.is_complete():
         return state.templates.TemplateResponse(
-            request, "connect_gmail.html", {"variant": "config_missing"}, status_code=500
+            request, "connect_gmail.html", {"variant": "config_missing"}
         )
     stat = google_auth.status(gcfg)
     if stat["state"] == "connected":
@@ -2317,10 +2317,12 @@ async def library_doc_stream(
 @app.get("/library/{doc_id}", response_class=HTMLResponse)
 async def library_doc_detail(
     doc_id: str, request: Request, _: str = Depends(require_library_access)
-) -> HTMLResponse:
+) -> Response:
     meta = state.library.get(doc_id)
     if meta is None:
         raise HTTPException(404, f"doc {doc_id} not found")
+    if not _is_async_request(request):
+        return RedirectResponse(url=f"/library#{doc_id}", status_code=303)
     extracted = state.library.get_extracted(doc_id) or ""
     verification = state.library.get_verification(doc_id) or {}
     return state.templates.TemplateResponse(
@@ -2537,10 +2539,15 @@ async def people_new(
 @app.get("/people/{person_id}", response_class=HTMLResponse)
 async def people_detail(
     person_id: str, request: Request, _: str = Depends(require_library_access)
-) -> HTMLResponse:
+) -> Response:
     meta = state.people.get(person_id)
     if meta is None:
         raise HTTPException(404, f"person {person_id} not found")
+    # Direct browser nav (no HX-Request header) — bounce to the row anchor on
+    # the index. The fragment template renders unstyled outside its <details>
+    # wrapper.
+    if not _is_async_request(request):
+        return RedirectResponse(url=f"/people#{person_id}", status_code=303)
     notes = state.people.get_notes(person_id) or ""
     return state.templates.TemplateResponse(
         request,
