@@ -259,6 +259,136 @@ into `save_gmail_attachment_spec` (mirror the pattern in `READ_DOCUMENT_SPEC`).
 
 **Depends on:** Step 3 commit H landed (done).
 
+## T-NEW-F — Remove Gmail/Calendar integration from kid mode entirely; opt-in in adult mode
+
+**What:** Stop registering `create_gmail_draft`, `create_calendar_event`,
+`update_calendar_event`, `read_email`, `search_emails`, `list_calendar_events`,
+`save_gmail_attachment` (and any future Google-write tools) in kid mode at the
+registry level — not at the prompt level. In adult mode, default these to OFF
+behind a Helm value (`adult.integrations.google.enabled: false`); the user
+opts in per-deploy.
+
+**Why:** Today `chart/values.schema.json:48-52` declares
+`write_tools_disabled: const true` in kid mode, but `app/main.py:153-172`
+registers Gmail/Calendar tools unconditionally. The schema is a lie. A
+prompt-jailbreak in kid mode could send email or create calendar events on
+the parent's account. Adult mode also shouldn't enable Google integrations
+by default — most adult-therapy users don't want Claudia touching their
+calendar.
+
+**Pros:** Closes the schema/code gap. Removes a real safety footgun. Aligns
+the default with what a new adult user actually wants. Lets adult and kid
+mode evolve in parallel without "did you remember to gate this for kid?"
+review burden — tools are gated at the registry, once.
+
+**Cons:** Requires Helm value rename + migration note for existing adult
+deploys (Liam's, Jasper's). Existing users who relied on Gmail/Calendar
+in adult mode will need to flip the new flag.
+
+**Context:** Implementation:
+1. `app/main.py:_build_tool_registry`: branch on `cfg.is_adult AND cfg.adult_integrations_google_enabled` before registering each Google tool spec.
+2. `app/config.py`: add `adult_integrations_google_enabled: bool = False`.
+3. `chart/values.yaml`: add `adult.integrations.google.enabled: false` (default off).
+4. `chart/values.schema.json`: drop the lying `write_tools_disabled: const true` block, OR keep it and have the registry actually honour it.
+5. `companion-kid.md`: remove the lines listing Gmail/Calendar tools as available (lines 28-35) — they're not, and listing them invites attempts.
+6. `examples/adult-values.yaml`: leave default off; document the opt-in path in README.
+7. Tests: add `test_kid_mode_no_google_tools_registered` asserting the registry has no Google tools when `mode: kid`.
+
+**Depends on:** Nothing. Should land before adult-mode testing starts so the
+testing baseline reflects the secured posture.
+
+## T-NEW-G — Fix the schema lies + dead config
+
+**What:** Three small cleanups surfaced by the kid-vs-adult audit:
+1. `no_anthropomorphism: const true` in `chart/values.schema.json` — prompt-only, not code-enforced. Either add a code gate (post-process companion-kid responses through a regex/classifier that rejects "I missed you" / "we"-as-relationship language) or drop the schema lie and document it as prompt-mediated.
+2. `session_nudge_minutes` in `chart/values.schema.json` and `app/config.py` — defined, never read by any code. Delete or implement.
+3. Audit all template `{% if claudia_mode == "kid" %}` checks (~10 templates: home, session_chat, setup/step{1,2,3}, settings, library, people, message_pair, messages_list) for the same shape — consolidate where possible.
+
+**Why:** The kid-vs-adult audit found these as parallel-development risks. A
+schema constraint that doesn't reflect code is worse than no constraint —
+it gives false confidence to reviewers and sets a trap for future maintainers.
+
+**Pros:** Removes false-confidence surfaces. Makes the schema actually trustworthy.
+**Cons:** Anthropomorphism gate is non-trivial if implemented properly.
+Probably ship as "drop the schema claim, document as prompt-mediated" for v1.
+
+**Depends on:** T-NEW-F (which closes the biggest schema-lie); these are smaller follow-ups.
+
+## T-NEW-H — Full adult-mode test pass before personal-therapy migration
+
+**What:** Drive the full adult-mode surface in a real browser per
+`docs/qa-protocol.md`. Cover: setup wizard, chat composer (Enter / Shift+Enter
+/ auto-scroll), session end → memory-diff /review cards, library upload + extract
+flow, people add/edit, /report PDF generation, theme persistence across pages,
+auditor BackgroundTask completion (no Envoy resets). Fix every bug found
+atomically; ship as v0.6.x patches.
+
+**Why:** Liam plans to migrate his personal robo-therapist data into adult
+mode and use claudia as his primary therapy tool. Adult mode needs to work
+reliably *before* that migration starts — not after. Adult is also the
+larger surface (library/people/report) so testing it first surfaces more
+shared-surface bugs (theme, auth, setup) that kid mode also depends on.
+
+**Pros:** Bugs found in adult shake out shared-surface issues that kid mode
+inherits. Faster iteration loop than kid mode (no passphrase ceremony,
+fewer safety gates to step around).
+
+**Cons:** Doesn't directly verify kid-mode safety floor. Kid testing still
+needed before any production hand to Jasper.
+
+**Context:** Use the qa-protocol checklist. Run mode = LIVE against
+`claudia.coopernetes.com`. Before testing starts, confirm T-NEW-F has
+landed so the security posture being tested is the production-shape posture.
+
+**Depends on:** T-NEW-F (Gmail/Calendar gating) + the v0.6.0 inherited bug
+list (theme picker, kid_parent_display_name, Envoy reset, keyboard shortcuts,
+auto-scroll) — fix those first so testing isn't constantly re-finding them.
+
+## T-NEW-I — Reconsider files-vs-database for /data backing store
+
+**What:** Decide whether the JSONL + filesystem-tree backing store
+(`/data/sessions/*.jsonl`, `/data/library/*`, `/data/people/*.json`,
+`/data/session-logs/*.md`, `/data/.credentials/*`) should migrate to
+something more structured. Three candidate end-states:
+1. **Stay with files** — accept the trade-offs, harden what's there.
+2. **SQLite on the same PVC** — single-file embedded DB, ACID, queryable, no extra infra. Sessions/people/library-manifest as tables; raw documents stay on disk.
+3. **Postgres** — separate StatefulSet, biggest lift, only justified if multi-pod write concurrency or cross-deploy queries are wanted.
+
+**Why:** Files were chosen for v1 convenience. Three pressures push toward
+reconsideration:
+- The kid-session persistence fix (commit `9f1ca9d`) was needed because in-memory dict didn't survive pod restart — a sign the file/in-memory line is moving.
+- People + library now have indexes (`library/manifest.json`, `people/*.json`) that are de-facto DB tables, manually maintained.
+- Adult-mode personal-therapy use (T-NEW-H goal) means longitudinal queries ("when did this theme first appear?", "show me all sessions tagged X") that are awkward against JSONL.
+
+**Pros of moving to SQLite:** ACID writes (no half-written JSONL on crash),
+real queries, schema migrations are a solved problem (alembic), single file
+on the same PVC = no infra change, transactional precis-stack updates,
+one round-trip to read a session instead of glob+parse.
+
+**Cons:** Migration of existing v0.6.x JSONL data. `read_document` /
+auditor-sidecar / library-extractor are all written against file paths;
+some refactor. SQLite single-writer locks could be an issue if multiple
+async tasks write concurrently (though FastAPI single-pod doesn't really
+have that problem).
+
+**Pros of staying with files:** No migration. `kubectl exec; ls` works.
+JSONL is git-grep-able and human-readable. Backup is a tarball.
+
+**Cons of staying:** Concurrency safety relies on filesystem semantics
+that aren't guaranteed across NFS / overlayfs. Indexes drift. Queries
+require full scans.
+
+**Recommendation (initial):** SQLite for sessions + people + library manifest
++ session-keys + audit sidecars (the structured stuff). Keep filesystem for
+raw documents (PDFs, images, originals) since they're blobs that don't need
+DB-level transactionality. Defer Postgres unless multi-pod write contention
+shows up.
+
+**Depends on:** A focused design pass — write `docs/storage-decision.md`
+listing the on-disk artifacts, their access pattern (read-many vs append-once),
+their query needs, and the proposed SQLite/file split. Then a v0.7.x branch
+to do the migration with shadow-write + back-fill before cutover.
+
 ## T-NEW-B — Wireframe regeneration after v1 design departures
 
 **What:** Update or regenerate `docs/wireframe/chat-kid.html`,
