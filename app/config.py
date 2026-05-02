@@ -14,7 +14,6 @@ Env vars (all optional, have sane defaults):
     CLAUDIA_COUNTRY           default: AU
     CLAUDIA_INGRESS_HOST      e.g. claudia.example.com
     CLAUDIA_KID_PARENT_DISPLAY_NAME  what claudia calls the deployer ("your dad")
-    CLAUDIA_KID_SAFETY_SESSION_NUDGE_MINUTES  JSON array, default [60, 90]
     CLAUDIA_ADULT_INTEGRATIONS_GOOGLE_ENABLED  "true"/"1"/"yes" to enable
                               Gmail+Calendar tool registration in adult mode.
                               Default: false. Ignored in kid mode (always off).
@@ -28,9 +27,8 @@ Env vars (all optional, have sane defaults):
 
 from __future__ import annotations
 
-import json
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -54,7 +52,6 @@ class Config:
     country: str
     ingress_host: str
     kid_parent_display_name: str
-    kid_session_nudge_minutes: list[int] = field(default_factory=lambda: [60, 90])
     google_client_id: str = ""
     google_client_secret: str = ""
     google_redirect_uri: str = ""
@@ -102,13 +99,6 @@ def load() -> Config:
     ingress_host = os.environ.get("CLAUDIA_INGRESS_HOST", "claudia.example.com")
     kid_parent_display_name = os.environ.get("CLAUDIA_KID_PARENT_DISPLAY_NAME", "your parents")
 
-    nudge_raw = os.environ.get("CLAUDIA_KID_SAFETY_SESSION_NUDGE_MINUTES", "[60, 90]")
-    try:
-        nudges = json.loads(nudge_raw)
-        assert isinstance(nudges, list) and all(isinstance(n, int) for n in nudges)
-    except (json.JSONDecodeError, AssertionError):
-        nudges = [60, 90]
-
     google_client_id = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "")
     google_client_secret = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "")
     google_redirect_uri = os.environ.get(
@@ -138,7 +128,6 @@ def load() -> Config:
         country=country,
         ingress_host=ingress_host,
         kid_parent_display_name=kid_parent_display_name,
-        kid_session_nudge_minutes=nudges,
         google_client_id=google_client_id,
         google_client_secret=google_client_secret,
         google_redirect_uri=google_redirect_uri,

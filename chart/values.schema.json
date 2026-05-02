@@ -49,12 +49,7 @@
             "no_anthropomorphism": {
               "type": "boolean",
               "const": true,
-              "description": "Non-disableable. Kid prompt forbids streaks, romance, exclusivity, anti-parent secrecy."
-            },
-            "session_nudge_minutes": {
-              "type": "array",
-              "items": { "type": "integer", "minimum": 5, "maximum": 240 },
-              "default": [60, 90]
+              "description": "Non-disableable. Enforced via the kid system prompt (companion-kid.md): forbids streaks, romance, exclusivity, anti-parent secrecy. The const:true here promises the prompt-level rule is shipped; it is not a runtime gate."
             }
           },
           "required": ["haiku_classifier", "no_anthropomorphism"]

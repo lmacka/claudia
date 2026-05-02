@@ -55,7 +55,6 @@ kid:
   safety:
     haiku_classifier: true          # NON-DISABLEABLE
     no_anthropomorphism: true       # NON-DISABLEABLE
-    session_nudge_minutes: [60, 90] # tunable; v1 ships with two nudges
   encryption:
     enabled: false                  # v1 dev mode: app does not encrypt. v1.5 restores this.
 

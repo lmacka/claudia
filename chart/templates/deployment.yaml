@@ -66,8 +66,6 @@ spec:
               value: "true"
             - name: CLAUDIA_KID_SAFETY_NO_ANTHROPOMORPHISM
               value: "true"
-            - name: CLAUDIA_KID_SAFETY_SESSION_NUDGE_MINUTES
-              value: {{ .Values.kid.safety.session_nudge_minutes | toJson | quote }}
             - name: CLAUDIA_KID_ENCRYPTION_ENABLED
               value: "true"
             {{- end }}

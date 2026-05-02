@@ -34,7 +34,6 @@ kid:
   safety:
     haiku_classifier: true            # NON-DISABLEABLE per values.schema.json
     no_anthropomorphism: true         # forbids "I miss you" / streaks / romance
-    session_nudge_minutes: [60, 90]   # "you've been chatting a while"
   encryption:
     enabled: true                     # at-rest encryption with kid passphrase
 
