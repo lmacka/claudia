@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Any
 
 import structlog
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, status
+from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import (
     HTMLResponse,
     PlainTextResponse,
@@ -119,6 +119,44 @@ def _theme_context(request: Request) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Parent display name (kid mode) — file-backed override of the Helm default.
+# Editable via /setup/1 + /settings; reads on every request so a change
+# applies immediately without a pod restart.
+# ---------------------------------------------------------------------------
+
+PARENT_DISPLAY_NAME_FILE = "parent_display_name.txt"
+
+
+def effective_kid_parent_display_name() -> str:
+    """File override → cfg default. The file is written by /setup/1 and /settings."""
+    try:
+        p = state.cfg.data_root / PARENT_DISPLAY_NAME_FILE
+        if p.exists():
+            value = p.read_text(encoding="utf-8").strip()
+            if value:
+                return value
+    except (OSError, AttributeError):
+        pass
+    return state.cfg.kid_parent_display_name
+
+
+def _save_kid_parent_display_name(value: str) -> None:
+    """Persist a new parent display name. Empty string clears the override."""
+    p = state.cfg.data_root / PARENT_DISPLAY_NAME_FILE
+    value = value.strip()
+    if not value:
+        p.unlink(missing_ok=True)
+        return
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(value + "\n", encoding="utf-8")
+
+
+def _parent_name_context(request: Request) -> dict:
+    """Jinja2Templates context_processor: per-request parent display name."""
+    return {"parent_display_name": effective_kid_parent_display_name()}
+
+
+# ---------------------------------------------------------------------------
 # App state
 # ---------------------------------------------------------------------------
 
@@ -136,6 +174,17 @@ class AppState:
     extractor_registry: Any
     status_bus: StatusBus
     people: People
+    # Tracks asyncio.create_task spawns (auditor + opener-seed). Holding
+    # references prevents GC; tests await this set to verify completion.
+    background_tasks: set[asyncio.Task] = set()
+
+
+def _spawn_background(coro) -> asyncio.Task:
+    """Track an asyncio.create_task so it doesn't get GC'd mid-flight."""
+    task = asyncio.create_task(coro)
+    state.background_tasks.add(task)
+    task.add_done_callback(state.background_tasks.discard)
+    return task
 
 
 state = AppState()
@@ -203,7 +252,7 @@ async def lifespan(app: FastAPI):
         cfg.prompts_dir,
         mode=cfg.mode,
         display_name=cfg.display_name,
-        kid_parent_display_name=cfg.kid_parent_display_name,
+        kid_parent_display_name_provider=effective_kid_parent_display_name,
         people_md_provider=lambda: state.people.render_people_md() if hasattr(state, "people") else "",
     )
     state.claude = None if cfg.is_local else ClaudeClient(api_key=cfg.anthropic_api_key)
@@ -227,12 +276,13 @@ async def lifespan(app: FastAPI):
 
     state.templates = Jinja2Templates(
         directory=str(state.app_root / "templates"),
-        context_processors=[_theme_context],
+        context_processors=[_theme_context, _parent_name_context],
     )
     state.templates.env.globals["asset_version"] = str(int(_time.time()))
     state.templates.env.globals["claudia_mode"] = cfg.mode
     state.templates.env.globals["display_name"] = cfg.display_name
-    state.templates.env.globals["parent_display_name"] = cfg.kid_parent_display_name
+    # parent_display_name is supplied dynamically per-request by
+    # _parent_name_context so /setup edits apply without a pod restart.
     state.templates.env.globals["crisis_footer_text"] = safety.CRISIS_FOOTER_TEXT
     state.templates.env.globals["au_hotlines"] = safety.AU_HOTLINES
 
@@ -462,7 +512,6 @@ async def login_page(request: Request) -> HTMLResponse:
         {
             "is_first_time": is_first_time,
             "display_name": cfg.display_name,
-            "parent_display_name": cfg.kid_parent_display_name,
         },
     )
 
@@ -496,7 +545,6 @@ async def login_submit(request: Request) -> Response:
                 {
                     "is_first_time": True,
                     "display_name": cfg.display_name,
-                    "parent_display_name": cfg.kid_parent_display_name,
                     "error": "The two passwords didn't match.",
                 },
                 status_code=400,
@@ -510,7 +558,6 @@ async def login_submit(request: Request) -> Response:
                 {
                     "is_first_time": True,
                     "display_name": cfg.display_name,
-                    "parent_display_name": cfg.kid_parent_display_name,
                     "error": str(e),
                 },
                 status_code=400,
@@ -529,7 +576,6 @@ async def login_submit(request: Request) -> Response:
             {
                 "is_first_time": False,
                 "display_name": cfg.display_name,
-                "parent_display_name": cfg.kid_parent_display_name,
                 "error": "That password didn't match. Try again.",
             },
             status_code=401,
@@ -577,6 +623,17 @@ async def settings_page(request: Request, _: str = Depends(require_auth)) -> HTM
         "settings.html",
         {"valid_themes": VALID_THEMES},
     )
+
+
+@app.post("/settings/parent-name")
+async def settings_parent_name(request: Request, _: str = Depends(require_auth)) -> Response:
+    """Persist the parent's display name. Kid mode only."""
+    if not state.cfg.is_kid:
+        raise HTTPException(404, "parent name is kid-mode only")
+    form = await request.form()
+    value = str(form.get("parent_display_name", "")).strip()
+    _save_kid_parent_display_name(value)
+    return RedirectResponse(url="/settings", status_code=303)
 
 
 @app.post("/settings/theme")
@@ -638,7 +695,6 @@ async def admin_home(
         "admin/home.html",
         {
             "display_name": cfg.display_name,
-            "parent_display_name": cfg.kid_parent_display_name,
             "session_count": len(sessions),
         },
     )
@@ -655,7 +711,6 @@ async def admin_review(
         "admin/review.html",
         {
             "display_name": cfg.display_name,
-            "parent_display_name": cfg.kid_parent_display_name,
             "summary": None,
             "themes": [],
             "flag": "none",
@@ -719,7 +774,7 @@ async def setup_step1(request: Request, _: str = Depends(require_setup_auth)) ->
             "data": state_data,
             "cfg_display_name": state.cfg.display_name,
             "cfg_country": state.cfg.country,
-            "cfg_parent_display_name": state.cfg.kid_parent_display_name,
+            "cfg_parent_display_name": effective_kid_parent_display_name(),
         },
     )
 
@@ -727,14 +782,19 @@ async def setup_step1(request: Request, _: str = Depends(require_setup_auth)) ->
 @app.post("/setup/1")
 async def setup_step1_submit(request: Request, _: str = Depends(require_setup_auth)) -> Response:
     form = await request.form()
+    parent_name = str(form.get("parent_display_name", "")).strip()
     _setup_state_save(
         {
             "preferred_name": str(form.get("preferred_name", "")).strip(),
             "dob": str(form.get("dob", "")).strip(),
             "country": str(form.get("country", "")).strip() or "AU",
             "region": str(form.get("region", "")).strip(),
+            "parent_display_name": parent_name,
         }
     )
+    # Persist the parent name immediately so prompts pick it up before /setup/3.
+    if state.cfg.is_kid and parent_name:
+        _save_kid_parent_display_name(parent_name)
     return RedirectResponse(url="/setup/2", status_code=303)
 
 
@@ -924,9 +984,7 @@ def _mood_sparkline(data_root: Path) -> str | None:
 
 
 @app.get("/session/new")
-async def session_new(
-    background_tasks: BackgroundTasks, _: str = Depends(require_auth)
-) -> RedirectResponse:
+async def session_new(_: str = Depends(require_auth)) -> RedirectResponse:
     """No picker. Create a session and redirect to it."""
     if state.store.active_session():
         return RedirectResponse("/", status_code=303)
@@ -944,9 +1002,20 @@ async def session_new(
     state.store.append_event(session_id, "session_started", {"model": SONNET})
 
     if not state.cfg.is_local:
-        background_tasks.add_task(_seed_opener_safe, session_id, SONNET, blocks)
+        # asyncio.create_task instead of BackgroundTasks so the redirect
+        # response can flush before the worker thread runs the slow opener
+        # — see the rationale in session_end.
+        _spawn_background(_seed_opener_safe_async(session_id, SONNET, blocks))
 
     return RedirectResponse(f"/session/{session_id}", status_code=303)
+
+
+async def _seed_opener_safe_async(session_id: str, model: str, blocks) -> None:
+    """Async wrapper for the sync opener-seed."""
+    try:
+        await asyncio.to_thread(_seed_opener_safe, session_id, model, blocks)
+    except Exception:  # noqa: BLE001
+        log.exception("session.opener_async_wrapper_failed", session_id=session_id)
 
 
 def _seed_opener_safe(session_id: str, model: str, blocks) -> None:
@@ -1054,7 +1123,6 @@ async def session_messages_poll(
 async def session_message(
     session_id: str,
     request: Request,
-    background_tasks: BackgroundTasks,
     _: str = Depends(require_auth),
 ) -> HTMLResponse:
     try:
@@ -1234,7 +1302,6 @@ async def session_review(
 @app.post("/session/{session_id}/end")
 async def session_end(
     session_id: str,
-    background_tasks: BackgroundTasks,
     _: str = Depends(require_auth),
 ) -> RedirectResponse:
     try:
@@ -1250,7 +1317,13 @@ async def session_end(
     )
     state.store.append_event(session_id, "session_ended", {})
     log.info("session.ended", session_id=session_id)
-    background_tasks.add_task(_run_audit_and_apply, session_id)
+    # Spawn audit on the event loop (not as a Starlette BackgroundTask) so the
+    # response is fully flushed BEFORE the worker thread is taken — Starlette
+    # holds the connection until BackgroundTasks complete, which let Envoy
+    # see "upstream connection termination" on slow auditor runs (qa-protocol
+    # bug 3 from v0.6.0). The sync auditor + Anthropic call still runs in a
+    # worker thread via _run_audit_and_apply_async.
+    _spawn_background(_run_audit_and_apply_async(session_id))
     return RedirectResponse(f"/session/{session_id}", status_code=303)
 
 
@@ -1321,6 +1394,14 @@ def _event_present(session_id: str, event_type: str) -> bool:
     return False
 
 
+async def _run_audit_and_apply_async(session_id: str) -> None:
+    """Async wrapper: run the sync auditor in a worker thread, log on failure."""
+    try:
+        await asyncio.to_thread(_run_audit_and_apply, session_id)
+    except Exception:  # noqa: BLE001
+        log.exception("audit.async_wrapper_failed", session_id=session_id)
+
+
 def _run_audit_and_apply(session_id: str) -> None:
     """Background-task: run auditor, write session-log + current_state + app-feedback."""
     if _event_present(session_id, "audit_applied"):
@@ -1367,7 +1448,15 @@ def _run_audit_and_apply(session_id: str) -> None:
             report = summariser_mod.mock_auditor_report(inp)
         else:
             assert state.claude is not None
-            report = summariser_mod.run_auditor(state.claude, state.cfg.prompts_dir, header.model or SONNET, inp)
+            report = summariser_mod.run_auditor(
+                state.claude,
+                state.cfg.prompts_dir,
+                header.model or SONNET,
+                inp,
+                mode=state.cfg.mode,
+                display_name=state.cfg.display_name,
+                parent_display_name=effective_kid_parent_display_name() if state.cfg.is_kid else "",
+            )
     except summariser_mod.AuditorError as e:
         log.error("audit.failed", session_id=session_id, error=str(e))
         state.store.append_event(session_id, "auditor_failed", {"error": str(e)})

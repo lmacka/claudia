@@ -65,8 +65,29 @@ class SummariserInput:
     timezone_now: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
 
 
-def _auditor_system_prompt(prompts_dir: Path) -> str:
-    return (prompts_dir / "auditor.md").read_text(encoding="utf-8")
+def _auditor_system_prompt(
+    prompts_dir: Path,
+    mode: str = "adult",
+    display_name: str = "",
+    parent_display_name: str = "",
+) -> str:
+    """Load auditor-{mode}.md and substitute display-name placeholders.
+
+    Mode is "adult" or "kid" — files are auditor-adult.md / auditor-kid.md.
+    A bare auditor.md path is kept as a back-compat fallback for tests that
+    don't supply a mode.
+    """
+    candidate = prompts_dir / f"auditor-{mode}.md"
+    if not candidate.exists():
+        candidate = prompts_dir / "auditor.md"  # legacy fallback
+    text = candidate.read_text(encoding="utf-8")
+    if mode == "kid":
+        text = (
+            text
+            .replace("{{DISPLAY_NAME}}", display_name or "the kid")
+            .replace("{{PARENT_DISPLAY_NAME}}", parent_display_name or "your parent")
+        )
+    return text
 
 
 def _build_user_message(inp: SummariserInput) -> str:
@@ -193,8 +214,16 @@ def run_auditor(
     model: str,
     inp: SummariserInput,
     max_tokens: int = 4096,
+    mode: str = "adult",
+    display_name: str = "",
+    parent_display_name: str = "",
 ) -> AuditorReport:
-    system = _auditor_system_prompt(prompts_dir)
+    system = _auditor_system_prompt(
+        prompts_dir,
+        mode=mode,
+        display_name=display_name,
+        parent_display_name=parent_display_name,
+    )
     user_msg = _build_user_message(inp)
 
     raw = claude._c.messages.create(  # noqa: SLF001

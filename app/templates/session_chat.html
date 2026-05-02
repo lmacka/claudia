@@ -125,19 +125,37 @@
 
 <script>
   function claudiaScrollBottom() {
+    // Two RAF round-trips so we land AFTER layout settles after the swap.
+    // window.scrollTo is more reliable than scrollIntoView when the message
+    // is taller than the viewport — scrollIntoView({block:'end'}) puts the
+    // bottom of the message at the viewport bottom, which can leave the
+    // page above scrolled past the user's reading point.
     requestAnimationFrame(function() {
-      const msgs = document.getElementById('messages');
-      if (!msgs) return;
-      const last = msgs.lastElementChild;
-      if (last && last.scrollIntoView) {
-        last.scrollIntoView({ block: 'end', behavior: 'smooth' });
-      } else {
-        window.scrollTo(0, document.body.scrollHeight);
-      }
+      requestAnimationFrame(function() {
+        window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+      });
     });
   }
 
   document.addEventListener('DOMContentLoaded', claudiaScrollBottom);
+
+  // Keyboard shortcut: Enter sends, Shift+Enter inserts a newline.
+  // IME composition (CJK input methods) is excluded so accept-candidate
+  // doesn't accidentally send.
+  (function() {
+    const ta = document.getElementById('content');
+    if (!ta) return;
+    ta.addEventListener('keydown', function(e) {
+      if (e.key !== 'Enter') return;
+      if (e.shiftKey) return;
+      if (e.isComposing || e.keyCode === 229) return;
+      const form = document.getElementById('msg-form');
+      if (!form) return;
+      e.preventDefault();
+      if (form.requestSubmit) form.requestSubmit();
+      else form.submit();
+    });
+  })();
 
   document.body.addEventListener('htmx:afterSwap', function(evt) {
     if (evt.detail && evt.detail.target && evt.detail.target.id === 'messages') {

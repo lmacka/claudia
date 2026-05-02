@@ -39,7 +39,7 @@
     ("amber",    "amber",         "#e6c89c", "#c4a87a", "#272623"),
     ("contrast", "high contrast", "#ffffff", "#bbbbbb", "#000000"),
   ] %}
-  <form method="post" action="/settings/theme">
+  <form id="theme-form" method="post" action="/settings/theme">
     <div class="swatch-row">
       {% for key, label, c1, c2, c3 in theme_swatches %}
         <label class="swatch{% if theme == key %} selected{% endif %}">
@@ -56,11 +56,41 @@
       {% endfor %}
     </div>
     <p style="margin-top: 14px;">
-      <button type="submit" class="primary">save theme</button>
-      <small class="muted">Currently <strong>{{ theme }}</strong>.</small>
+      <noscript><button type="submit" class="primary">save theme</button></noscript>
+      <small class="muted">Currently <strong>{{ theme }}</strong>. Click any swatch to switch.</small>
     </p>
   </form>
+
+  <script>
+    // Click swatch → submit immediately so the new theme applies on reload.
+    // Also flips the visual `.selected` class so the user gets feedback even
+    // before the round-trip completes.
+    document.querySelectorAll('#theme-form input[name="theme"]').forEach(function(radio) {
+      radio.addEventListener('change', function() {
+        document.querySelectorAll('#theme-form .swatch').forEach(function(s) {
+          s.classList.remove('selected');
+        });
+        const label = radio.closest('.swatch');
+        if (label) label.classList.add('selected');
+        radio.form.requestSubmit();
+      });
+    });
+  </script>
 </section>
+
+{% if claudia_mode == "kid" %}
+<section class="panel">
+  <h2>parent name (how claudia refers to you)</h2>
+  <p class="muted"><small>Used in copy to {{ display_name or "your kid" }} like "{{ parent_display_name }} can ask me for a summary." Pick whatever's true and unloaded — saved immediately.</small></p>
+  <form method="post" action="/settings/parent-name">
+    <label for="parent_display_name" class="visually-hidden">parent display name</label>
+    <input type="text" id="parent_display_name" name="parent_display_name"
+           value="{{ parent_display_name }}" placeholder="your parent" maxlength="60"
+           style="max-width: 320px;">
+    <button type="submit" class="primary">save</button>
+  </form>
+</section>
+{% endif %}
 
 <section class="panel">
   <h2>about</h2>
@@ -68,7 +98,6 @@
   <ul style="list-style: none; padding-left: 0; margin: 0;">
     <li><strong>mode:</strong> {{ claudia_mode }}</li>
     <li><strong>display name:</strong> {{ display_name or "(unset)" }}</li>
-    {% if claudia_mode == "kid" %}<li><strong>parent name (in copy):</strong> {{ parent_display_name }}</li>{% endif %}
   </ul>
 </section>
 

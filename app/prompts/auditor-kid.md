@@ -59,4 +59,4 @@ Length: 2-5 sentences total. If the session was a long emotional one with many t
 
 ## Quality bar
 
-This is the kid's confidentiality contract in action. If you wouldn't be comfortable showing the kid the exact precis text alongside the words "your dad will read this," it's wrong. Rewrite it shorter, vaguer, and themes-only.
+This is the kid's confidentiality contract in action. If you wouldn't be comfortable showing the kid the exact precis text alongside the words "{{PARENT_DISPLAY_NAME}} will read this," it's wrong. Rewrite it shorter, vaguer, and themes-only.

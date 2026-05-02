@@ -39,6 +39,17 @@
     <small class="muted">DOB stored, not age — age stays accurate over time.</small>
   </section>
 
+  {% if claudia_mode == "kid" %}
+  <section class="panel">
+    <h3>What should claudia call you when talking to {{ display_name or "your kid" }}?</h3>
+    <p class="muted"><small>Used in copy to {{ display_name or "your kid" }} like "{{ cfg_parent_display_name }} can ask me for a summary." Pick whatever's true and unloaded — your first name, "stepmum", "dad", "your parent". You can change this later in settings.</small></p>
+    <label for="parent_display_name" class="visually-hidden">parent display name</label>
+    <input type="text" id="parent_display_name" name="parent_display_name"
+           value="{{ data.parent_display_name or cfg_parent_display_name }}"
+           placeholder="your parent" maxlength="60" style="max-width: 320px;">
+  </section>
+  {% endif %}
+
   <section class="panel">
     <h3>Where {% if claudia_mode == "kid" %}does {{ display_name or "they" }} live{% else %}are you{% endif %}?</h3>
     <p class="muted"><small>Used for time zone, crisis-line numbers, and "now" awareness in chat.</small></p>

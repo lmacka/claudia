@@ -30,7 +30,7 @@ basicAuth:
 
 # kid-mode-only block — ignored when mode=adult
 kid:
-  parentDisplayName: "your parents"   # e.g. "your dad", "your mum", "your parents"
+  parentDisplayName: "your parent"    # default; the parent overrides this in /setup or /settings (per-deploy, persists to /data/parent_display_name.txt)
   safety:
     haiku_classifier: true            # NON-DISABLEABLE per values.schema.json
     no_anthropomorphism: true         # forbids "I miss you" / streaks / romance

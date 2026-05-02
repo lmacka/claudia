@@ -44,6 +44,28 @@ def _events(client: TestClient, session_id: str) -> list[tuple[str, dict]]:
     return main_module.state.store._events.get(session_id, [])  # type: ignore[attr-defined]
 
 
+def _wait_for_event(client: TestClient, session_id: str, event: str, timeout: float = 2.0) -> None:
+    """Pump the loop with cheap requests until `event` appears (or timeout).
+
+    Background tasks now run via asyncio.create_task instead of FastAPI
+    BackgroundTasks (qa-protocol bug 3 fix), so TestClient does not implicitly
+    wait for them. Each client request enters the portal and yields to the loop
+    long enough for the audit to make progress.
+    """
+    import time as _time
+
+    deadline = _time.monotonic() + timeout
+    while _time.monotonic() < deadline:
+        if any(k == event for (k, _) in _events(client, session_id)):
+            return
+        client.get("/healthz")
+        _time.sleep(0.02)
+    raise AssertionError(
+        f"event {event!r} never appeared within {timeout}s; "
+        f"saw: {[k for (k, _) in _events(client, session_id)]}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Session create / view
 # ---------------------------------------------------------------------------
@@ -94,6 +116,7 @@ def test_end_button_redirects_to_chat_view(client: TestClient) -> None:
 def test_end_schedules_audit_in_background(client: TestClient) -> None:
     sid = _create_session(client)
     client.post(f"/session/{sid}/end", follow_redirects=False)
+    _wait_for_event(client, sid, "audit_applied")
     kinds = [k for (k, _) in _events(client, sid)]
     assert "audit_scheduled" in kinds
     assert "audit_applied" in kinds
@@ -149,6 +172,7 @@ def test_mood_rejects_invalid_score(client: TestClient) -> None:
 def test_session_log_written_after_end(client: TestClient) -> None:
     sid = _create_session(client)
     client.post(f"/session/{sid}/end", follow_redirects=False)
+    _wait_for_event(client, sid, "audit_applied")
     import app.main as main_module
 
     logs_dir = main_module.state.cfg.data_root / "session-logs"

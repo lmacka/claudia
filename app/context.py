@@ -40,7 +40,8 @@ class ContextLoader:
         prompts_dir: Path,
         mode: str = "adult",
         display_name: str = "",
-        kid_parent_display_name: str = "your parents",
+        kid_parent_display_name: str = "your parent",
+        kid_parent_display_name_provider=None,
         people_md_provider=None,
     ) -> None:
         self.data_root = data_root
@@ -48,10 +49,23 @@ class ContextLoader:
         self.context_dir = data_root / "context"
         self.mode = mode
         self.display_name = display_name
-        self.kid_parent_display_name = kid_parent_display_name
+        # Either a static value (back-compat for tests) or a callable returning
+        # the value at assemble time. The callable form lets file-backed
+        # overrides apply without recreating the loader.
+        self._kid_parent_display_name_static = kid_parent_display_name
+        self._kid_parent_display_name_provider = kid_parent_display_name_provider
         # Callable[[], str] returning the rendered people roster, or None.
         # Concatenated under INDEX.md in block 2 when present.
         self._people_md_provider = people_md_provider
+
+    @property
+    def kid_parent_display_name(self) -> str:
+        if self._kid_parent_display_name_provider is not None:
+            try:
+                return self._kid_parent_display_name_provider() or self._kid_parent_display_name_static
+            except Exception:  # noqa: BLE001
+                return self._kid_parent_display_name_static
+        return self._kid_parent_display_name_static
 
     def _read(self, path: Path) -> str:
         try:

@@ -35,7 +35,8 @@
       "properties": {
         "parentDisplayName": {
           "type": "string",
-          "default": "your parents"
+          "default": "your parent",
+          "description": "Default name claudia uses for the parent in copy. Editable in-app at /setup/1 and /settings — the in-app value persists to /data/parent_display_name.txt and overrides this default."
         },
         "safety": {
           "type": "object",
