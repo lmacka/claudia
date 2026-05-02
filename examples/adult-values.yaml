@@ -33,12 +33,16 @@ basicAuth:
     name: claudia-auth
     key: password
 
-# Uncomment if you want Gmail/Calendar tools in adult mode.
-# googleOAuthSecretRef:
-#   enabled: true
-#   name: google-oauth
-#   clientIdKey: client-id
-#   clientSecretKey: client-secret
+# Gmail + Calendar tools are OFF by default. Set adult.integrations.google.enabled
+# to true and provide the secret to enable them. Kid mode never honours this.
+# adult:
+#   integrations:
+#     google:
+#       enabled: true
+#       secretRef:
+#         name: google-oauth
+#         clientIdKey: client-id
+#         clientSecretKey: client-secret
 
 model:
   primary: claude-sonnet-4-6

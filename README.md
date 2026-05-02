@@ -171,8 +171,10 @@ mode. Adult is a subset (skip the kid handoff steps).
   `/data` (no DB).
 - **Chart.** `chart/` — single-deployment + service + ingress (or HTTPRoute)
   + PVC. `values.schema.json` enforces the kid-mode safety floor at
-  `helm install` time (haiku_classifier, write_tools_disabled,
-  no_anthropomorphism — all `const: true`).
+  `helm install` time (haiku_classifier, no_anthropomorphism — both
+  `const: true`). Gmail/Calendar tools are gated at the app's tool
+  registry rather than the schema: kid mode physically cannot register
+  them; adult mode opts in via `adult.integrations.google.enabled`.
 - **CI.** `.github/workflows/test.yml` runs `scripts/preflight.sh` —
   ruff, pytest, helm lint, helm template (adult / kid / Gateway), and
   schema floor-rejection checks. `image.yml` builds multi-arch

@@ -46,17 +46,21 @@ Required secrets in the namespace before install:
 - `anthropic-api-key` with key `api-key`
 - `claudia-auth` with key `password`
 - `google-oauth` with keys `client-id`, `client-secret` (only if
-  `googleOAuthSecretRef.enabled: true`)
+  `adult.integrations.google.enabled: true` — adult mode only)
 
 ## Schema enforcement
 
-`values.schema.json` enforces three kid-mode safety floor settings
+`values.schema.json` enforces two kid-mode safety floor settings
 non-disableably (`"const": true` when `mode=kid`):
 
 - `kid.safety.haiku_classifier` — pre-turn safety classifier call.
-- `kid.safety.write_tools_disabled` — Gmail send + calendar create blocked.
 - `kid.safety.no_anthropomorphism` — kid prompt forbids streaks, romance,
   exclusivity, anti-parent secrecy.
+
+Gmail and Calendar tools are gated at the tool registry rather than the
+chart layer — kid mode physically cannot register them regardless of any
+value. See `app/main.py:_google_enabled`. In adult mode they are
+opt-in via `adult.integrations.google.enabled` (default false).
 
 Helm rejects the install if any are flipped. See `../docs/design.md`
 Premise 3 and "Reviewer concerns" item C16.

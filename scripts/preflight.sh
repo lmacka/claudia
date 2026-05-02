@@ -56,9 +56,12 @@ grep -q "kind: HTTPRoute" /tmp/claudia-gw-render.yaml
 # Keep this list in lockstep with chart/values.schema.json.
 FLOOR_ITEMS=(
   "kid.safety.haiku_classifier"
-  "kid.safety.write_tools_disabled"
   "kid.safety.no_anthropomorphism"
 )
+# kid.safety.write_tools_disabled was dropped from the schema in T-NEW-F.
+# The block is now enforced at the tool registry (app/main.py:_google_enabled)
+# rather than at the chart layer — kid mode physically cannot register the
+# Gmail/Calendar tool specs regardless of any helm value.
 for path in "${FLOOR_ITEMS[@]}"; do
   step "schema rejects ${path}=false"
   if helm template claudia chart/ --values examples/kid-values.yaml \

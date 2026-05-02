@@ -64,14 +64,16 @@ spec:
               value: {{ .Values.kid.parentDisplayName | quote }}
             - name: CLAUDIA_KID_SAFETY_HAIKU_CLASSIFIER
               value: "true"
-            - name: CLAUDIA_KID_SAFETY_WRITE_TOOLS_DISABLED
-              value: "true"
             - name: CLAUDIA_KID_SAFETY_NO_ANTHROPOMORPHISM
               value: "true"
             - name: CLAUDIA_KID_SAFETY_SESSION_NUDGE_MINUTES
               value: {{ .Values.kid.safety.session_nudge_minutes | toJson | quote }}
             - name: CLAUDIA_KID_ENCRYPTION_ENABLED
               value: "true"
+            {{- end }}
+            {{- if eq .Values.mode "adult" }}
+            - name: CLAUDIA_ADULT_INTEGRATIONS_GOOGLE_ENABLED
+              value: {{ ((.Values.adult).integrations).google.enabled | default false | quote }}
             {{- end }}
             - name: ANTHROPIC_API_KEY
               valueFrom:
@@ -83,17 +85,17 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.basicAuth.passwordSecretRef.name }}
                   key: {{ .Values.basicAuth.passwordSecretRef.key }}
-            {{- if .Values.googleOAuthSecretRef.enabled }}
+            {{- if and (eq .Values.mode "adult") (((.Values.adult).integrations).google).enabled }}
             - name: GOOGLE_OAUTH_CLIENT_ID
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.googleOAuthSecretRef.name }}
-                  key: {{ .Values.googleOAuthSecretRef.clientIdKey }}
+                  name: {{ .Values.adult.integrations.google.secretRef.name }}
+                  key: {{ .Values.adult.integrations.google.secretRef.clientIdKey | default "client-id" }}
             - name: GOOGLE_OAUTH_CLIENT_SECRET
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.googleOAuthSecretRef.name }}
-                  key: {{ .Values.googleOAuthSecretRef.clientSecretKey }}
+                  name: {{ .Values.adult.integrations.google.secretRef.name }}
+                  key: {{ .Values.adult.integrations.google.secretRef.clientSecretKey | default "client-secret" }}
             - name: GOOGLE_OAUTH_REDIRECT_URI
               value: "https://{{ .Values.ingress.host }}/oauth/callback"
             {{- end }}

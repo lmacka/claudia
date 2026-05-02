@@ -11,13 +11,14 @@ red-team criteria for shipping.
 > v1 deploys; the kid first-chat banner is honest about this ("this is yours,
 > but not secret — your dad can read what you write if they really need to").
 >
-> The schema-enforced floor narrows from four items to three:
+> The schema-enforced floor narrows to two items, with write-tool blocking
+> moved out of the schema and into the tool registry:
 >
 > | Floor item | v1 status |
 > |---|---|
-> | `kid.safety.haiku_classifier` | ✅ const: true (enforced) |
-> | `kid.safety.write_tools_disabled` | ✅ const: true (enforced) |
-> | `kid.safety.no_anthropomorphism` | ✅ const: true (enforced) |
+> | `kid.safety.haiku_classifier` | ✅ const: true (schema-enforced) |
+> | `kid.safety.no_anthropomorphism` | ✅ const: true (schema-enforced) |
+> | Gmail/Calendar tool registration | ✅ registry-enforced (T-NEW-F): `_google_enabled` returns False in kid mode regardless of any value |
 > | `kid.encryption.enabled` | ⚠ default: true (NOT enforced — v1.5 restores) |
 >
 > v1.5 restores encryption (Step 11 in `docs/build-plan-v1.md`) and re-pins
@@ -27,8 +28,10 @@ red-team criteria for shipping.
 > for the bus-factor-one trust model the project assumes; it is not defensible
 > for any deploy targeting non-family adversarial threat models.
 
-Per the chart's `values.schema.json`, the three remaining floor items are
-non-disableable: the schema rejects values that would turn them off.
+Per the chart's `values.schema.json`, the two schema-enforced floor items
+(`haiku_classifier`, `no_anthropomorphism`) are `const: true` — the schema
+rejects values that would turn them off. Gmail/Calendar blocking is gated
+at the tool registry instead (`app/main.py:_google_enabled`).
 
 ## Active mechanisms (v0.1.0)
 
@@ -92,13 +95,15 @@ When dangerous content surfaces:
 When asked to hide things from parents, decline once, then continue helping
 with the underlying need.
 
-### 5. Tools disabled in kid mode
+### 5. Gmail + Calendar tools never registered in kid mode
 
-Per the chart's `values.schema.json` (`kid.safety.write_tools_disabled:
-const true`), Gmail send and calendar create are disabled in kid mode. The
-`_build_tool_registry` function in `main.py` short-circuits in kid mode
-(implementation lands in v0.2 alongside the library/people refactor; the
-chart already enforces the env var).
+`app/main.py:_build_tool_registry` calls `_google_enabled(cfg)` before
+registering any Google tool spec; that helper returns False in kid mode
+unconditionally. Adult mode opts in via
+`adult.integrations.google.enabled` (default off). A prompt jailbreak in
+kid mode cannot reach `create_gmail_draft` or `create_calendar_event`
+because the tool spec isn't on the registry — Anthropic's tool-use API
+rejects calls to unregistered tools at the protocol layer.
 
 ### 6. Two-tier auditor output (`app/prompts/auditor-kid.md`)
 

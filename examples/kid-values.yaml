@@ -5,10 +5,11 @@
 # read kid session content. Do NOT promise privacy on v1 deploys.
 # Encryption returns at Step 11 — see docs/build-plan-v1.md.
 #
-# The classifier / write-tools / no-anthropomorphism floor IS enforced
-# (const: true in chart/values.schema.json). encryption.enabled is a
-# default-true flag the app currently ignores; it will be re-pinned to
-# const: true at v1.5 via schema migration.
+# The classifier (runtime) and no-anthropomorphism (prompt) floor IS
+# enforced. Gmail+Calendar tools are gated at the registry — kid mode
+# never registers them, regardless of any config. encryption.enabled is
+# a default-true flag the app currently ignores; it will be re-pinned
+# to const: true at v1.5 via schema migration.
 #
 # Pre-requisites:
 #   1. A Kubernetes cluster with an Ingress controller.
@@ -44,14 +45,15 @@ basicAuth:
     name: claudia-jasper-auth
     key: password
 
-# Google OAuth is intentionally NOT enabled in kid mode.
-# Gmail send and calendar create are disabled per the kid-mode safety floor.
+# Google OAuth is intentionally unavailable in kid mode.
+# Gmail and Calendar tools are gated at the app's tool registry — even
+# if Google OAuth env vars somehow leaked into a kid pod, the tools
+# would never register. See app/main.py:_google_enabled.
 
 kid:
   parentDisplayName: "your dad"     # or "your mum" / "your parents" — what claudia calls the deployer when talking to the kid
   safety:
     haiku_classifier: true          # NON-DISABLEABLE
-    write_tools_disabled: true      # NON-DISABLEABLE
     no_anthropomorphism: true       # NON-DISABLEABLE
     session_nudge_minutes: [60, 90] # tunable; v1 ships with two nudges
   encryption:

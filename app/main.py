@@ -150,6 +150,11 @@ def _google_cfg(cfg: config_module.Config) -> GoogleAuthConfig:
     )
 
 
+def _google_enabled(cfg: config_module.Config) -> bool:
+    """Single source of truth: Google integrations are adult-mode-only and opt-in."""
+    return cfg.is_adult and cfg.adult_integrations_google_enabled
+
+
 def _build_tool_registry(cfg: config_module.Config, session_id: str | None = None) -> ToolRegistry:
     reg = ToolRegistry()
     reg.register(READ_DOCUMENT_SPEC(state.library, cfg.data_root))
@@ -159,16 +164,20 @@ def _build_tool_registry(cfg: config_module.Config, session_id: str | None = Non
     reg.register(lookup_person_spec(state.people, state.library))
     reg.register(search_people_spec(state.people))
 
-    gcfg = _google_cfg(cfg)
-    if gcfg.is_complete():
-        reg.register(search_gmail_spec(gcfg))
-        reg.register(get_gmail_thread_spec(gcfg))
-        reg.register(get_gmail_message_spec(gcfg))
-        reg.register(save_gmail_attachment_spec(gcfg, cfg.data_root))
-        reg.register(create_gmail_draft_spec(gcfg))
-        reg.register(list_calendar_events_spec(gcfg))
-        reg.register(create_calendar_event_spec(gcfg))
-        reg.register(update_calendar_event_spec(gcfg))
+    # Google integrations: adult-mode only, opt-in. Kid mode physically
+    # cannot get Gmail/Calendar tools — the gate is here at the registry,
+    # not at the prompt. See T-NEW-F.
+    if _google_enabled(cfg):
+        gcfg = _google_cfg(cfg)
+        if gcfg.is_complete():
+            reg.register(search_gmail_spec(gcfg))
+            reg.register(get_gmail_thread_spec(gcfg))
+            reg.register(get_gmail_message_spec(gcfg))
+            reg.register(save_gmail_attachment_spec(gcfg, cfg.data_root))
+            reg.register(create_gmail_draft_spec(gcfg))
+            reg.register(list_calendar_events_spec(gcfg))
+            reg.register(create_calendar_event_spec(gcfg))
+            reg.register(update_calendar_event_spec(gcfg))
     return reg
 
 
@@ -1760,6 +1769,8 @@ def _md_blocks(text: str):
 
 @app.get("/connect-gmail", response_class=HTMLResponse)
 async def connect_gmail(request: Request, _: str = Depends(require_auth)) -> HTMLResponse:
+    if not _google_enabled(state.cfg):
+        raise HTTPException(status_code=404, detail="Google integrations not enabled")
     gcfg = _google_cfg(state.cfg)
     if not gcfg.is_complete():
         return state.templates.TemplateResponse(
@@ -1778,12 +1789,16 @@ async def connect_gmail(request: Request, _: str = Depends(require_auth)) -> HTM
 
 @app.get("/connect-gmail/disconnect")
 async def connect_gmail_disconnect(_: str = Depends(require_auth)) -> RedirectResponse:
+    if not _google_enabled(state.cfg):
+        raise HTTPException(status_code=404, detail="Google integrations not enabled")
     google_auth.revoke(_google_cfg(state.cfg))
     return RedirectResponse("/", status_code=303)
 
 
 @app.get("/oauth/callback")
 async def oauth_callback(request: Request, _: str = Depends(require_auth)) -> HTMLResponse:
+    if not _google_enabled(state.cfg):
+        raise HTTPException(status_code=404, detail="Google integrations not enabled")
     code = request.query_params.get("code")
     returned_state = request.query_params.get("state")
     error = request.query_params.get("error")

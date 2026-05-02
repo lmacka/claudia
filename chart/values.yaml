@@ -13,11 +13,15 @@ anthropicSecretRef:
   name: anthropic-api-key
   key: api-key
 
-googleOAuthSecretRef:         # optional; adult mode only
-  enabled: false
-  name: google-oauth
-  clientIdKey: client-id
-  clientSecretKey: client-secret
+# adult-mode-only block. Ignored when mode=kid.
+adult:
+  integrations:
+    google:                   # Gmail + Google Calendar tools.
+      enabled: false          # opt-in; default off. Kid mode never honours this.
+      secretRef:              # only consulted when enabled=true
+        name: google-oauth
+        clientIdKey: client-id
+        clientSecretKey: client-secret
 
 basicAuth:
   passwordSecretRef:
@@ -29,7 +33,6 @@ kid:
   parentDisplayName: "your parents"   # e.g. "your dad", "your mum", "your parents"
   safety:
     haiku_classifier: true            # NON-DISABLEABLE per values.schema.json
-    write_tools_disabled: true        # blocks Gmail send / calendar create
     no_anthropomorphism: true         # forbids "I miss you" / streaks / romance
     session_nudge_minutes: [60, 90]   # "you've been chatting a while"
   encryption:

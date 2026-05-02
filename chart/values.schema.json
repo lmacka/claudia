@@ -45,11 +45,6 @@
               "const": true,
               "description": "Non-disableable. Pre-turn safety classifier call. See docs/design.md Premise 3."
             },
-            "write_tools_disabled": {
-              "type": "boolean",
-              "const": true,
-              "description": "Non-disableable. Gmail send and calendar create blocked in kid mode."
-            },
             "no_anthropomorphism": {
               "type": "boolean",
               "const": true,
@@ -61,7 +56,7 @@
               "default": [60, 90]
             }
           },
-          "required": ["haiku_classifier", "write_tools_disabled", "no_anthropomorphism"]
+          "required": ["haiku_classifier", "no_anthropomorphism"]
         },
         "encryption": {
           "type": "object",
@@ -73,6 +68,35 @@
             }
           },
           "required": ["enabled"]
+        }
+      }
+    },
+    "adult": {
+      "type": "object",
+      "description": "Only honoured when mode=adult. Ignored in kid mode.",
+      "properties": {
+        "integrations": {
+          "type": "object",
+          "properties": {
+            "google": {
+              "type": "object",
+              "description": "Gmail + Google Calendar tool integration. Opt-in; default off. Kid mode never honours this — gated at registry, not just here.",
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "default": false
+                },
+                "secretRef": {
+                  "type": "object",
+                  "properties": {
+                    "name": { "type": "string" },
+                    "clientIdKey": { "type": "string", "default": "client-id" },
+                    "clientSecretKey": { "type": "string", "default": "client-secret" }
+                  }
+                }
+              }
+            }
+          }
         }
       }
     },

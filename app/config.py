@@ -15,6 +15,9 @@ Env vars (all optional, have sane defaults):
     CLAUDIA_INGRESS_HOST      e.g. claudia.example.com
     CLAUDIA_KID_PARENT_DISPLAY_NAME  what claudia calls the deployer ("your dad")
     CLAUDIA_KID_SAFETY_SESSION_NUDGE_MINUTES  JSON array, default [60, 90]
+    CLAUDIA_ADULT_INTEGRATIONS_GOOGLE_ENABLED  "true"/"1"/"yes" to enable
+                              Gmail+Calendar tool registration in adult mode.
+                              Default: false. Ignored in kid mode (always off).
     ANTHROPIC_API_KEY         required in dev/prod
     BASIC_AUTH_USER           default: liam (adult mode chat user OR parent-admin)
     BASIC_AUTH_PASSWORD       adult: chat password; kid: parent-admin password
@@ -55,6 +58,7 @@ class Config:
     google_client_id: str = ""
     google_client_secret: str = ""
     google_redirect_uri: str = ""
+    adult_integrations_google_enabled: bool = False
 
     @property
     def is_local(self) -> bool:
@@ -110,6 +114,8 @@ def load() -> Config:
     google_redirect_uri = os.environ.get(
         "GOOGLE_OAUTH_REDIRECT_URI", f"https://{ingress_host}/oauth/callback"
     )
+    google_enabled_raw = os.environ.get("CLAUDIA_ADULT_INTEGRATIONS_GOOGLE_ENABLED", "")
+    adult_google_enabled = google_enabled_raw.strip().lower() in ("1", "true", "yes")
 
     if ops_mode in ("dev", "prod"):
         if not api_key:
@@ -136,4 +142,5 @@ def load() -> Config:
         google_client_id=google_client_id,
         google_client_secret=google_client_secret,
         google_redirect_uri=google_redirect_uri,
+        adult_integrations_google_enabled=adult_google_enabled,
     )
