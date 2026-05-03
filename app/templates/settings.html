@@ -106,11 +106,30 @@
 <section class="panel">
   <h2>Gmail + Calendar tools</h2>
   <p class="muted"><small>When enabled, claudia can read your Gmail threads and your calendar, and draft emails / create events on your behalf. Requires Google OAuth to be wired in the deploy. Saved immediately. Default off.</small></p>
-  <form method="post" action="/settings/google-integration">
+  <form method="post" action="/settings/google-integration" style="margin-bottom: 12px;">
     <input type="hidden" name="enabled" value="{{ 'false' if google_enabled else 'true' }}">
     <button type="submit" class="primary">{{ 'disable' if google_enabled else 'enable' }} Google tools</button>
-    <small class="muted">Currently <strong>{{ 'enabled' if google_enabled else 'disabled' }}</strong>.</small>
+    <small class="muted">Toggle currently <strong>{{ 'on' if google_enabled else 'off' }}</strong>.</small>
   </form>
+  {% if google_enabled %}
+    {% if google_tools_connected %}
+      <p class="muted"><small>&check; Google account is connected. <a href="/connect-gmail">manage / disconnect</a></small></p>
+    {% else %}
+      <div class="callout" style="border-left: 3px solid var(--accent, #d4a059); padding: 10px 14px; background: rgba(212,160,89,0.08); border-radius: 4px;">
+        <p style="margin: 0 0 6px;"><strong>Toggle is on, but no Google account is connected yet.</strong></p>
+        <p style="margin: 0 0 8px;"><small>Enabling the toggle just registers the tools — claudia still needs your OAuth grant before it can read Gmail or your calendar.</small></p>
+        <p style="margin: 0;"><a href="/connect-gmail" class="primary" style="text-decoration: none; padding: 6px 12px; display: inline-block;">connect Google account &rarr;</a></p>
+      </div>
+      <details style="margin-top: 10px;">
+        <summary><small class="muted">Getting "redirect_uri_mismatch" or "bad redirect" from Google?</small></summary>
+        <div style="padding: 8px 0; font-size: 0.9em;">
+          <p>That error comes from Google, not claudia. The OAuth client in your Google Cloud Console needs this redirect URI listed under <em>Authorized redirect URIs</em>:</p>
+          <p><code style="user-select: all; padding: 4px 8px; background: rgba(0,0,0,0.06); border-radius: 3px; word-break: break-all;">{{ request.url.scheme }}://{{ request.url.netloc }}/oauth/callback</code></p>
+          <p>Add it under <strong>APIs &amp; Services &rarr; Credentials &rarr; (your OAuth 2.0 Client ID) &rarr; Authorized redirect URIs</strong>, save, then retry. The OAuth client you wired into the chart values is the one that needs this URI.</p>
+        </div>
+      </details>
+    {% endif %}
+  {% endif %}
 </section>
 {% endif %}
 

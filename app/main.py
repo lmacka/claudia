@@ -765,10 +765,21 @@ async def logout(request: Request) -> Response:
 
 @app.get("/settings", response_class=HTMLResponse)
 async def settings_page(request: Request, _: str = Depends(require_auth)) -> HTMLResponse:
+    google_creds_present = state.cfg.is_adult and _google_creds_present(state.cfg)
+    google_tools_connected = False
+    if google_creds_present and _google_enabled(state.cfg):
+        try:
+            google_tools_connected = google_auth.status(_google_cfg(state.cfg)).get("state") == "connected"
+        except Exception:
+            google_tools_connected = False
     return state.templates.TemplateResponse(
         request,
         "settings.html",
-        {"valid_themes": VALID_THEMES},
+        {
+            "valid_themes": VALID_THEMES,
+            "google_creds_present": google_creds_present,
+            "google_tools_connected": google_tools_connected,
+        },
     )
 
 
@@ -1373,7 +1384,14 @@ async def setup_step5_submit(request: Request, _: str = Depends(require_setup_au
     if state_data.get("section_for"):
         sections.append("## What claudia is for\n\n" + state_data["section_for"].strip() + "\n")
     if state_data.get("dob"):
-        sections.append(f"## Date of birth\n\n{state_data['dob']}\n")
+        sections.append(
+            "## Date of birth (authoritative)\n\n"
+            f"{state_data['dob']}\n\n"
+            "This date is the ground truth for the user's age and DOB. "
+            "Any year, age, or birthday mentioned in prose elsewhere — in diagnostic reports, journals, "
+            "uploaded documents — is informational background, not the source of truth. "
+            "When the user asks how old they are or when their birthday is, calculate from this date.\n"
+        )
     if state_data.get("country") or state_data.get("region"):
         loc = ", ".join(x for x in [state_data.get("region", ""), state_data.get("country", "")] if x)
         sections.append(f"## Location\n\n{loc}\n")

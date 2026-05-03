@@ -26,6 +26,14 @@
   <form method="post" action="/auth/google/start">
     <button type="submit" class="primary big">Sign in with Google &rarr;</button>
   </form>
+  <details style="margin-top: 12px;">
+    <summary><small class="muted">Google says "redirect_uri_mismatch" or "bad redirect"?</small></summary>
+    <div style="padding: 8px 0; font-size: 0.9em;">
+      <p>That error is from Google's side, not claudia. The OAuth client you wired into the chart needs this redirect URI listed under <em>Authorized redirect URIs</em>:</p>
+      <p><code style="user-select: all; padding: 4px 8px; background: rgba(0,0,0,0.06); border-radius: 3px; word-break: break-all;">{{ request.url.scheme }}://{{ request.url.netloc }}/oauth/callback</code></p>
+      <p>Add it under <strong>Google Cloud Console &rarr; APIs &amp; Services &rarr; Credentials &rarr; (your OAuth 2.0 Client ID) &rarr; Authorized redirect URIs</strong>, save, then retry. Also confirm the OAuth consent screen has <code>openid</code>, <code>email</code>, <code>profile</code> scopes added.</p>
+    </div>
+  </details>
 </section>
 
 <p class="muted" style="text-align: center; margin: 24px 0 12px;">— or —</p>

@@ -23,6 +23,14 @@
   </p>
   <p><a href="{{ auth_url }}" role="button" class="primary">Authorise with Google</a></p>
   <p><a href="/" class="muted">Cancel</a></p>
+  <details style="margin-top: 16px;">
+    <summary><small class="muted">Google says "redirect_uri_mismatch" or "bad redirect"?</small></summary>
+    <div style="padding: 8px 0; font-size: 0.9em;">
+      <p>That error is from Google's side. The OAuth client wired into this deploy needs this redirect URI added under <em>Authorized redirect URIs</em>:</p>
+      <p><code style="user-select: all; padding: 4px 8px; background: rgba(0,0,0,0.06); border-radius: 3px; word-break: break-all;">{{ request.url.scheme }}://{{ request.url.netloc }}/oauth/callback</code></p>
+      <p>Google Cloud Console &rarr; APIs &amp; Services &rarr; Credentials &rarr; (your OAuth 2.0 Client ID) &rarr; Authorized redirect URIs. Add it, save, retry. Also confirm Gmail and Calendar APIs are enabled for the project, and that the OAuth consent screen has the relevant scopes added.</p>
+    </div>
+  </details>
 
 {% elif variant == "config_missing" %}
   <h1>Gmail connect unavailable</h1>

@@ -180,6 +180,7 @@
     wrap.appendChild(body);
     const msgs = document.getElementById('messages');
     if (msgs) msgs.appendChild(wrap);
+    if (ta) { ta.value = ''; ta.style.height = ''; }
     claudiaScrollBottom();
   }
 

@@ -398,14 +398,35 @@ class People:
     def find_near_match(self, name: str, max_distance: int = 2) -> PersonMeta | None:
         """Find an existing person whose name or alias is within Levenshtein
         distance of `name`. Used by auditor proposals to merge alias on
-        near-match instead of creating duplicates."""
+        near-match instead of creating duplicates.
+
+        v0.8.1: scale the effective max distance with name length so short
+        names need exact matches. With max_distance=2 unscaled, "Rhi" and
+        "Bri" matched (distance 2 = subst R→B + h→r), merging two distinct
+        people. The new heuristic:
+            len <= 3:  effective max = 0 (exact match only)
+            len == 4:  effective max = 1 (single typo)
+            len >= 5:  effective max = min(2, max_distance)
+        Names this short are usually nicknames where one off-character
+        means a different person, not a typo.
+        """
         target = name.strip().lower()
+        if not target:
+            return None
         best: tuple[int, PersonMeta] | None = None
         for meta in self.list_all():
             candidates = [meta.name.lower()] + [a.lower() for a in meta.aliases]
             for cand in candidates:
+                # Effective threshold: tighter for short names.
+                shorter = min(len(target), len(cand))
+                if shorter <= 3:
+                    effective = 0
+                elif shorter == 4:
+                    effective = 1
+                else:
+                    effective = min(2, max_distance)
                 d = _levenshtein(target, cand)
-                if d <= max_distance and (best is None or d < best[0]):
+                if d <= effective and (best is None or d < best[0]):
                     best = (d, meta)
         return best[1] if best else None
 
