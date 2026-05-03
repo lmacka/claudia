@@ -27,10 +27,20 @@ import secrets
 from dataclasses import dataclass
 from pathlib import Path
 
-import structlog
-from google.auth.transport.requests import Request as GoogleRequest
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import Flow
+# oauthlib enforces strict scope-equality between the request and the token
+# response by default. With include_granted_scopes=true, Google legitimately
+# returns a SUPERSET of the requested scopes (it bundles any prior grants for
+# the same client + user). That superset trips oauthlib's check and surfaces
+# as "OAuth exchange failed: Scope has changed from … to …" in the wizard.
+# Setting OAUTHLIB_RELAX_TOKEN_SCOPE=1 tells oauthlib to allow the broader
+# response scope set instead of erroring. Documented escape hatch — see
+# https://github.com/googleapis/google-auth-library-python/issues/445 .
+os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
+
+import structlog  # noqa: E402
+from google.auth.transport.requests import Request as GoogleRequest  # noqa: E402
+from google.oauth2.credentials import Credentials  # noqa: E402
+from google_auth_oauthlib.flow import Flow  # noqa: E402
 
 log = structlog.get_logger()
 
