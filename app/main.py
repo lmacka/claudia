@@ -156,6 +156,46 @@ def _parent_name_context(request: Request) -> dict:
     return {"parent_display_name": effective_kid_parent_display_name()}
 
 
+def _google_enabled_context(request: Request) -> dict:
+    """Jinja2Templates context_processor: per-request Google integration state."""
+    return {"google_enabled": _google_enabled(state.cfg)}
+
+
+# ---------------------------------------------------------------------------
+# Google integration toggle (adult mode) — file-backed override of the
+# CLAUDIA_ADULT_INTEGRATIONS_GOOGLE_ENABLED env var. Lets the user flip
+# Gmail/Calendar tools on/off from /settings without redeploying.
+# Kid mode physically cannot reach this — _google_enabled checks
+# cfg.is_adult first.
+# ---------------------------------------------------------------------------
+
+GOOGLE_ENABLED_FILE = "google_enabled.txt"
+
+
+def effective_google_enabled(cfg: config_module.Config | None = None) -> bool:
+    """File override → cfg default. Adult mode only — kid mode caller short-circuits.
+
+    cfg is optional; when omitted, reads state.cfg (request-time path).
+    Tests pass cfg explicitly to avoid global-state coupling.
+    """
+    cfg = cfg if cfg is not None else state.cfg
+    try:
+        p = cfg.data_root / GOOGLE_ENABLED_FILE
+        if p.exists():
+            value = p.read_text(encoding="utf-8").strip().lower()
+            return value in ("1", "true", "yes")
+    except (OSError, AttributeError):
+        pass
+    return cfg.adult_integrations_google_enabled
+
+
+def _save_google_enabled(value: bool) -> None:
+    """Persist the override. Always writes — explicit on or off."""
+    p = state.cfg.data_root / GOOGLE_ENABLED_FILE
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("true\n" if value else "false\n", encoding="utf-8")
+
+
 # ---------------------------------------------------------------------------
 # App state
 # ---------------------------------------------------------------------------
@@ -200,8 +240,15 @@ def _google_cfg(cfg: config_module.Config) -> GoogleAuthConfig:
 
 
 def _google_enabled(cfg: config_module.Config) -> bool:
-    """Single source of truth: Google integrations are adult-mode-only and opt-in."""
-    return cfg.is_adult and cfg.adult_integrations_google_enabled
+    """Single source of truth: Google integrations are adult-mode-only and opt-in.
+
+    Kid mode is short-circuited unconditionally. Adult mode honours the
+    file-backed override (set via /settings) if present, otherwise falls
+    back to cfg.adult_integrations_google_enabled (env var).
+    """
+    if not cfg.is_adult:
+        return False
+    return effective_google_enabled(cfg)
 
 
 def _build_tool_registry(cfg: config_module.Config, session_id: str | None = None) -> ToolRegistry:
@@ -276,7 +323,7 @@ async def lifespan(app: FastAPI):
 
     state.templates = Jinja2Templates(
         directory=str(state.app_root / "templates"),
-        context_processors=[_theme_context, _parent_name_context],
+        context_processors=[_theme_context, _parent_name_context, _google_enabled_context],
     )
     state.templates.env.globals["asset_version"] = str(int(_time.time()))
     state.templates.env.globals["claudia_mode"] = cfg.mode
@@ -633,6 +680,19 @@ async def settings_parent_name(request: Request, _: str = Depends(require_auth))
     form = await request.form()
     value = str(form.get("parent_display_name", "")).strip()
     _save_kid_parent_display_name(value)
+    return RedirectResponse(url="/settings", status_code=303)
+
+
+@app.post("/settings/google-integration")
+async def settings_google_integration(
+    request: Request, _: str = Depends(require_auth)
+) -> Response:
+    """Toggle Gmail + Calendar tool registration. Adult mode only."""
+    if not state.cfg.is_adult:
+        raise HTTPException(404, "Google integration is adult-mode only")
+    form = await request.form()
+    enabled = str(form.get("enabled", "")).strip().lower() in ("1", "true", "yes", "on")
+    _save_google_enabled(enabled)
     return RedirectResponse(url="/settings", status_code=303)
 
 

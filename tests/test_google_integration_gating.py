@@ -107,7 +107,46 @@ def test_google_enabled_helper_kid_always_false(tmp_path: Path) -> None:
     kid_off = _build_cfg(tmp_path, mode="kid", google_enabled=False, with_oauth_secrets=True)
     adult_on = _build_cfg(tmp_path, mode="adult", google_enabled=True, with_oauth_secrets=True)
     adult_off = _build_cfg(tmp_path, mode="adult", google_enabled=False, with_oauth_secrets=True)
+    main_module.state.cfg = kid_on
     assert main_module._google_enabled(kid_on) is False
+    main_module.state.cfg = kid_off
     assert main_module._google_enabled(kid_off) is False
+    main_module.state.cfg = adult_on
     assert main_module._google_enabled(adult_on) is True
+    main_module.state.cfg = adult_off
     assert main_module._google_enabled(adult_off) is False
+
+
+# ---------------------------------------------------------------------------
+# UI toggle (file-backed override of the env var)
+# ---------------------------------------------------------------------------
+
+
+def test_file_override_enables_when_env_off(tmp_path: Path) -> None:
+    """Adult mode + env off + file says true → tools registered."""
+    cfg = _build_cfg(tmp_path, mode="adult", google_enabled=False, with_oauth_secrets=True)
+    main_module.state.cfg = cfg
+    main_module._save_google_enabled(True)
+    assert main_module._google_enabled(cfg) is True
+    reg = main_module._build_tool_registry(cfg)
+    assert GOOGLE_TOOL_NAMES.issubset(reg.names())
+
+
+def test_file_override_disables_when_env_on(tmp_path: Path) -> None:
+    """Adult mode + env on + file says false → tools not registered."""
+    cfg = _build_cfg(tmp_path, mode="adult", google_enabled=True, with_oauth_secrets=True)
+    main_module.state.cfg = cfg
+    main_module._save_google_enabled(False)
+    assert main_module._google_enabled(cfg) is False
+    reg = main_module._build_tool_registry(cfg)
+    assert GOOGLE_TOOL_NAMES.isdisjoint(reg.names())
+
+
+def test_kid_mode_ignores_file_override(tmp_path: Path) -> None:
+    """Even if the override file says true, kid mode never honours it."""
+    cfg = _build_cfg(tmp_path, mode="kid", google_enabled=False, with_oauth_secrets=True)
+    main_module.state.cfg = cfg
+    main_module._save_google_enabled(True)
+    assert main_module._google_enabled(cfg) is False
+    reg = main_module._build_tool_registry(cfg)
+    assert GOOGLE_TOOL_NAMES.isdisjoint(reg.names())

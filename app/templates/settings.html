@@ -78,6 +78,18 @@
   </script>
 </section>
 
+{% if claudia_mode == "adult" %}
+<section class="panel">
+  <h2>Gmail + Calendar tools</h2>
+  <p class="muted"><small>When enabled, claudia can read your Gmail threads and your calendar, and draft emails / create events on your behalf. Requires Google OAuth to be wired in the deploy. Saved immediately. Default off.</small></p>
+  <form method="post" action="/settings/google-integration">
+    <input type="hidden" name="enabled" value="{{ 'false' if google_enabled else 'true' }}">
+    <button type="submit" class="primary">{{ 'disable' if google_enabled else 'enable' }} Google tools</button>
+    <small class="muted">Currently <strong>{{ 'enabled' if google_enabled else 'disabled' }}</strong>.</small>
+  </form>
+</section>
+{% endif %}
+
 {% if claudia_mode == "kid" %}
 <section class="panel">
   <h2>parent name (how claudia refers to you)</h2>
