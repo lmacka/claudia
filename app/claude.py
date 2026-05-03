@@ -165,3 +165,38 @@ def get_client(api_key: str) -> ClaudeClient | None:
         client = ClaudeClient(api_key=api_key)
         _CLIENT_CACHE[api_key] = client
     return client
+
+
+def validate_api_key(api_key: str, *, timeout_seconds: float = 5.0) -> tuple[bool, str]:
+    """Live-test an Anthropic API key with a minimal messages.create call.
+
+    Used by /setup/1 to block progression until the user has supplied a key
+    that actually works (decision 5 of v0.8 plan). Cheapest possible call —
+    haiku, max_tokens=1, one-word user message; well under $0.01.
+
+    Returns (ok, error_message). On success error_message is "".
+    """
+    if not api_key or not api_key.strip():
+        return False, "API key is empty."
+    api_key = api_key.strip()
+    if not api_key.startswith("sk-ant-"):
+        return False, "Anthropic keys start with 'sk-ant-'. Double-check the value you pasted."
+    try:
+        client = anthropic.Anthropic(api_key=api_key, timeout=timeout_seconds)
+        client.messages.create(
+            model="claude-haiku-4-5",
+            max_tokens=1,
+            messages=[{"role": "user", "content": "hi"}],
+        )
+        return True, ""
+    except anthropic.AuthenticationError:
+        return False, "Anthropic rejected the key. Check it's correct + the account has credit."
+    except anthropic.APIConnectionError as e:
+        return False, f"Couldn't reach Anthropic ({type(e).__name__}). Try again in a moment."
+    except anthropic.RateLimitError:
+        return False, "Anthropic rate-limited the test call. Try again in a moment."
+    except anthropic.APIStatusError as e:
+        return False, f"Anthropic responded with HTTP {e.status_code}. Try again in a moment."
+    except Exception as e:  # noqa: BLE001
+        log.warning("claude.validate_key.unexpected", error=str(e))
+        return False, f"Key test failed: {e}"

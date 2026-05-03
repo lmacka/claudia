@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}claudia — setup, recap{% endblock %}
+{% block content %}
+
+<nav class="nav" aria-label="primary">
+  <span class="brand">claudia</span>
+  <span class="spacer"></span>
+  <span class="muted"><small>first-run setup</small></span>
+</nav>
+
+<h1>Almost there.</h1>
+<p class="muted">Pick a colour scheme + (optionally) a name for claudia, then commit.</p>
+
+<div class="steps">
+  <div class="step done"><span class="num">&check;</span>API key</div>
+  <div class="step done"><span class="num">&check;</span>auth</div>
+  <div class="step done"><span class="num">&check;</span>profile</div>
+  <div class="step done"><span class="num">&check;</span>library</div>
+  <div class="step active"><span class="num">5</span>recap</div>
+</div>
+
+<section class="panel">
+  <h3>Recap</h3>
+  <ul>
+    <li>API key: <strong>{% if true %}configured{% endif %}</strong> · <a href="/setup/1">edit</a></li>
+    <li>Sign-in: <strong>password</strong> set · <a href="/setup/2">edit</a></li>
+    <li>Profile: <strong>{{ data.preferred_name or cfg_display_name or "—" }}</strong>{% if data.dob %}, DOB {{ data.dob }}{% endif %}{% if data.country %} — {{ data.region + ", " if data.region else "" }}{{ data.country }}{% endif %} · <a href="/setup/3">edit</a></li>
+    <li>{{ docs | length }} document{{ "" if docs | length == 1 else "s" }} loaded · <a href="/setup/4">edit</a></li>
+    <li>Profile sections filled: {{ ([data.section_who, data.section_stressors, data.section_never, data.section_for] | select | list | length) }} of 4 · <a href="/setup/4">edit</a></li>
+  </ul>
+</section>
+
+<form method="post" action="/setup/5">
+
+  <section class="panel">
+    <h3>Theme</h3>
+    <p class="muted"><small>All themes are dark base with a pastel accent. You can change later in /settings.</small></p>
+    {% set theme_swatches = [
+      ("sage",     "sage",          "#b8d4b8", "#8fb88f", "#232726"),
+      ("blush",    "blush",         "#f4c2c2", "#d49a9a", "#272323"),
+      ("lavender", "lavender",      "#c8b8e0", "#a690c2", "#25232a"),
+      ("amber",    "amber",         "#e6c89c", "#c4a87a", "#272623"),
+      ("contrast", "high contrast", "#ffffff", "#bbbbbb", "#000000"),
+    ] %}
+    <div class="swatch-row">
+      {% for key, label, c1, c2, c3 in theme_swatches %}
+        <label class="swatch{% if (theme or 'sage') == key %} selected{% endif %}">
+          <input type="radio" name="theme" value="{{ key }}"
+                 style="position: absolute; opacity: 0;"
+                 {% if (theme or 'sage') == key %}checked{% endif %}>
+          <div class="dot-row">
+            <span style="background: {{ c1 }};"></span>
+            <span style="background: {{ c2 }};"></span>
+            <span style="background: {{ c3 }};"></span>
+          </div>
+          {{ label }}
+        </label>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="panel">
+    <h3>What should claudia call itself? (optional)</h3>
+    <p class="muted"><small>Default is "claudia". If you set something else here, the bot will say "you can call me {your-name}" once at the start of every new session. Doesn't change the product name anywhere else.</small></p>
+    <label for="therapist_alias" class="visually-hidden">therapist name</label>
+    <input type="text" id="therapist_alias" name="therapist_alias"
+           value="{{ current_alias or '' }}" placeholder="claudia" maxlength="40"
+           style="max-width: 320px;">
+  </section>
+
+  <p style="margin-top: 18px;">
+    <a href="/setup/4" role="button" class="outline">&larr; back</a>
+    <button type="submit" class="primary big">finish &amp; start using claudia &rarr;</button>
+  </p>
+</form>
+
+{% endblock %}

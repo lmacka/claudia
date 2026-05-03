@@ -88,23 +88,19 @@ def test_settings_parent_name_renders_in_settings_page(kid_client: TestClient) -
     assert 'value="Alex"' in r.text
 
 
-def test_setup_step1_includes_parent_name_field_in_kid_mode(kid_client: TestClient) -> None:
-    """Setup wizard step 1 lets the parent set this before completing setup."""
-    # Setup is gated by parent-admin auth; kid_client is unauthenticated for /setup
-    # so the route returns 401. We assert the route exists and the template
-    # includes the input — render directly via the template.
+def test_setup_step3_includes_parent_name_field_in_kid_mode(kid_client: TestClient) -> None:
+    """Setup wizard step 3 (profile) lets the parent set this before completing setup.
+
+    v0.8: parent_display_name moved from step 1 to step 3 (the profile step) —
+    step 1 is now Anthropic API key only."""
     import app.main as main_module
 
-    # Force a /setup/1 render by clearing the marker (kv + legacy file)
+    # Force a /setup/3 render by clearing the completion marker.
     from app.db_kv import kv_delete
 
     main_module.state.cfg.data_root.joinpath(".setup_complete").unlink(missing_ok=True)
     kv_delete(main_module.state.cfg.data_root, main_module.KV_SETUP_COMPLETED)
-    # Bypass auth for this assertion by calling the template directly via TestClient
-    # — we instead verify by GETing /setup/1 with the basic auth header.
-    # Adult auth in kid mode for parent admin = BASIC_AUTH_USER + BASIC_AUTH_PASSWORD
-    # (in local ops_mode, auth is bypassed)
-    r = kid_client.get("/setup/1")
+    r = kid_client.get("/setup/3")
     assert r.status_code == 200, r.text
     assert 'name="parent_display_name"' in r.text
 

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}claudia — setup, basics{% endblock %}
+{% block title %}claudia — setup, API key{% endblock %}
 {% block content %}
 
 <nav class="nav" aria-label="primary">
@@ -8,82 +8,33 @@
   <span class="muted"><small>first-run setup</small></span>
 </nav>
 
-{% if claudia_mode == "kid" %}
-  <h1>Setting claudia up for {{ display_name or "your kid" }}.</h1>
-  <p class="muted">You're the deployer. They'll be the user. Three stages. This is your one shot to set them up well — once you hand it over, you only see summaries, not their chats.</p>
-{% else %}
-  <h1>Welcome.</h1>
-  <p class="muted">Three quick stages and claudia will be set up for you.</p>
-{% endif %}
+<h1>Welcome.</h1>
+<p class="muted">Five quick stages and claudia will be set up for you. We'll start with your Anthropic API key.</p>
 
 <div class="steps">
-  <div class="step active"><span class="num">1</span>basics</div>
-  <div class="step"><span class="num">2</span>add context</div>
-  <div class="step"><span class="num">3</span>recap &amp; ready</div>
+  <div class="step active"><span class="num">1</span>API key</div>
+  <div class="step"><span class="num">2</span>auth</div>
+  <div class="step"><span class="num">3</span>profile</div>
+  <div class="step"><span class="num">4</span>library</div>
+  <div class="step"><span class="num">5</span>recap</div>
 </div>
 
 <form method="post" action="/setup/1">
-
-  {% if claudia_mode == "adult" and not adult_passphrase_set %}
   <section class="panel">
-    <h3>Pick a password</h3>
-    <p class="muted"><small>You'll log in with this every time. Minimum 12 characters. Write it down somewhere safe — there's no recovery flow yet.</small></p>
-    <label for="passphrase" class="visually-hidden">password</label>
-    <input type="password" id="passphrase" name="passphrase" required minlength="12"
-           autocomplete="new-password" style="max-width: 320px;">
-    <label for="passphrase_confirm" class="visually-hidden">confirm password</label>
-    <input type="password" id="passphrase_confirm" name="passphrase_confirm" required minlength="12"
-           autocomplete="new-password" placeholder="type it again" style="max-width: 320px; margin-top: 8px;">
-    {% if passphrase_error %}
-      <p style="color: var(--danger); margin-top: 8px;">{{ passphrase_error }}</p>
+    <h3>Anthropic API key</h3>
+    <p class="muted"><small>claudia talks to Anthropic on every chat turn. Get a key at <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com</a> and paste it here. Stored on this server's PVC; never leaves the cluster.</small></p>
+    <label for="anthropic_api_key" class="visually-hidden">Anthropic API key</label>
+    <input type="password" id="anthropic_api_key" name="anthropic_api_key" required autofocus
+           autocomplete="off" placeholder="sk-ant-api03-..." style="max-width: 480px;"
+           {% if submitted_key_prefix %}value="{{ submitted_key_prefix }}"{% endif %}>
+    <p class="muted"><small>We'll do a 1-token test call to verify the key works before saving.</small></p>
+    {% if error %}
+      <p style="color: var(--danger); margin-top: 8px;">{{ error }}</p>
     {% endif %}
-  </section>
-  {% endif %}
-
-  <section class="panel">
-    <h3>{% if claudia_mode == "kid" %}Who is this claudia for?{% else %}Who is claudia for?{% endif %}</h3>
-
-    <label>display name <small class="muted">(set at install via Helm; not editable here)</small></label>
-    <input type="text" value="{{ cfg_display_name or '' }}" disabled>
-
-    <label for="preferred_name">preferred name (how I'll address {% if claudia_mode == "kid" %}them{% else %}you{% endif %})</label>
-    <input type="text" id="preferred_name" name="preferred_name"
-           value="{{ data.preferred_name or cfg_display_name }}">
-
-    <label for="dob">date of birth</label>
-    <input type="date" id="dob" name="dob" value="{{ data.dob or '' }}" style="max-width: 220px;">
-    <small class="muted">DOB stored, not age — age stays accurate over time.</small>
-  </section>
-
-  {% if claudia_mode == "kid" %}
-  <section class="panel">
-    <h3>What should claudia call you when talking to {{ display_name or "your kid" }}?</h3>
-    <p class="muted"><small>Used in copy to {{ display_name or "your kid" }} like "{{ cfg_parent_display_name }} can ask me for a summary." Pick whatever's true and unloaded — your first name, "stepmum", "dad", "your parent". You can change this later in settings.</small></p>
-    <label for="parent_display_name" class="visually-hidden">parent display name</label>
-    <input type="text" id="parent_display_name" name="parent_display_name"
-           value="{{ data.parent_display_name or cfg_parent_display_name }}"
-           placeholder="your parent" maxlength="60" style="max-width: 320px;">
-  </section>
-  {% endif %}
-
-  <section class="panel">
-    <h3>Where {% if claudia_mode == "kid" %}does {{ display_name or "they" }} live{% else %}are you{% endif %}?</h3>
-    <p class="muted"><small>Used for time zone, crisis-line numbers, and "now" awareness in chat.</small></p>
-
-    <label for="country">country</label>
-    <select id="country" name="country">
-      {% set countries = ["AU", "NZ", "UK", "US", "CA", "IE", "other"] %}
-      {% for c in countries %}
-        <option value="{{ c }}"{% if (data.country or cfg_country or 'AU') == c %} selected{% endif %}>{{ c }}</option>
-      {% endfor %}
-    </select>
-
-    <label for="region">state / region (optional)</label>
-    <input type="text" id="region" name="region" value="{{ data.region or '' }}" style="max-width: 280px;">
   </section>
 
   <p style="margin-top: 18px;">
-    <button type="submit" class="primary big">next: add context &rarr;</button>
+    <button type="submit" class="primary big">test &amp; save key &rarr;</button>
   </p>
 </form>
 

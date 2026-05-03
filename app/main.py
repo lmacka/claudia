@@ -630,7 +630,7 @@ async def login_page(request: Request) -> HTMLResponse:
     # Adult mode first-time: send to /setup/1 (the wizard captures the
     # password); they shouldn't be at /login at all.
     if role == "adult" and is_first_time:
-        return RedirectResponse(url="/setup/1", status_code=303)
+        return RedirectResponse(url="/setup", status_code=303)
 
     # Show "Sign in with Google" option only when:
     #   - adult mode
@@ -705,7 +705,7 @@ async def login_submit(request: Request) -> Response:
     if is_first_time and role == "adult":
         # Adult mode shouldn't reach /login first-time — the wizard handles
         # passphrase capture. Bounce there.
-        return RedirectResponse(url="/setup/1", status_code=303)
+        return RedirectResponse(url="/setup", status_code=303)
 
     if not auth_mod.verify_passphrase(cfg.data_root, passphrase, role=role):
         state.rate_limiter.record(ip)
@@ -979,70 +979,220 @@ def _mark_setup_complete(note: str = "") -> None:
     kv_set(state.cfg.data_root, KV_SETUP_COMPLETED, note or datetime.now(UTC).isoformat())
 
 
+# ---------------------------------------------------------------------------
+# 5-step wizard (v0.8 phase D)
+# ---------------------------------------------------------------------------
+#
+# Step 1: Anthropic API key (with live validation)
+# Step 2: Auth method (password OR Google OAuth identity)
+# Step 3: Profile + model + custom prompt + (disabled) kid-mode toggle
+# Step 4: Library import (inline upload, auto-draft profile)
+# Step 5: Recap + theme + therapist name → commit
+#
+# Adult mode only goes through this; kid mode setup is operator-side
+# (parent ssh + Helm), so kid users never hit /setup/*.
+#
+# Per /home/liamm/.claude/plans/ok-but-first-inspect-crystalline-seal.md.
+
+_AVAILABLE_MODELS = [
+    ("claude-sonnet-4-6", "Sonnet 4.6", "Default. Best balance of quality + cost."),
+    ("claude-opus-4-7", "Opus 4.7", "Most capable. ~5× the cost of Sonnet."),
+    ("claude-haiku-4-5", "Haiku 4.5", "Fastest, cheapest. Smaller model — less nuanced."),
+]
+
+
+def _setup_first_incomplete_step() -> int:
+    """Sticky-resume: pick the first incomplete step. Used by setup_root.
+
+    A step is "complete" iff the precondition for moving on has been
+    satisfied (key set, auth done, profile filled, etc). If everything's
+    done, return 5 (the recap) so the user can finalise.
+    """
+    cfg = state.cfg
+    # Step 1: Anthropic API key (env or kv); local mode skips the check.
+    if not cfg.is_local and not runtime_config_mod.get_anthropic_key(cfg.data_root):
+        return 1
+    # Step 2: adult passphrase OR Google identity bound; local skips.
+    if cfg.is_adult and not cfg.is_local:
+        from app.db_kv import kv_exists
+
+        password_done = auth_mod.is_passphrase_set(cfg.data_root, role="adult")
+        google_done = kv_exists(cfg.data_root, runtime_config_mod.KV_GOOGLE_IDENTITY_EMAIL)
+        if not (password_done or google_done):
+            return 2
+    state_data = _setup_state_load()
+    # Step 3: profile basics (DOB used as the canary)
+    if not state_data.get("dob"):
+        return 3
+    # Step 4: library not blocking; auto-draft button optional. Skip past
+    # only if at least one of the four textareas is filled.
+    profile_filled = any(
+        state_data.get(k) for k in ("section_who", "section_stressors", "section_never", "section_for")
+    )
+    if not profile_filled:
+        return 4
+    return 5
+
+
 @app.get("/setup", response_class=HTMLResponse)
 @app.get("/setup/", response_class=HTMLResponse)
 async def setup_root(_: str = Depends(require_setup_auth)) -> Response:
-    return RedirectResponse(url="/setup/1", status_code=303)
+    target = _setup_first_incomplete_step()
+    return RedirectResponse(url=f"/setup/{target}", status_code=303)
 
 
-def _step1_context(extra: dict | None = None) -> dict:
+def _setup_step_context(step: int, extra: dict | None = None) -> dict:
+    """Common Jinja context for any wizard step. Each step's GET adds its
+    own extras on top."""
     state_data = _setup_state_load()
-    # In local mode the password field is hidden — there's no auth at all.
-    passphrase_set = state.cfg.is_local or auth_mod.is_passphrase_set(
-        state.cfg.data_root, role="adult"
-    )
+    cfg = state.cfg
     ctx = {
-        "step": 1,
+        "step": step,
         "data": state_data,
-        "cfg_display_name": state.cfg.display_name,
-        "cfg_country": state.cfg.country,
+        "cfg_display_name": cfg.display_name,
+        "cfg_country": cfg.country,
         "cfg_parent_display_name": effective_kid_parent_display_name(),
-        "adult_passphrase_set": passphrase_set,
+        "adult_passphrase_set": (
+            cfg.is_local or auth_mod.is_passphrase_set(cfg.data_root, role="adult")
+        ),
     }
     if extra:
         ctx.update(extra)
     return ctx
 
 
+# ---- Step 1: Anthropic API key -------------------------------------------
+
+
 @app.get("/setup/1", response_class=HTMLResponse)
 async def setup_step1(request: Request, _: str = Depends(require_setup_auth)) -> HTMLResponse:
-    return state.templates.TemplateResponse(request, "setup/step1.html", _step1_context())
+    """Capture the Anthropic API key. Skipped automatically (303 → /setup/2)
+    if env-set, since the user can't change it from the UI when the source
+    is the Helm Secret (decision 8)."""
+    cfg = state.cfg
+    key_source = runtime_config_mod.get_field_source(cfg.data_root, "anthropic_api_key")
+    # Auto-skip: env-set or already in kv (no point re-prompting).
+    if key_source != "none":
+        return RedirectResponse(url="/setup/2", status_code=303)
+    return state.templates.TemplateResponse(
+        request, "setup/step1.html", _setup_step_context(1)
+    )
 
 
 @app.post("/setup/1")
 async def setup_step1_submit(request: Request, _: str = Depends(require_setup_auth)) -> Response:
+    """Validate the key with a tiny live Anthropic call before persisting.
+    Blocks until success per decision 5."""
+    form = await request.form()
+    api_key = str(form.get("anthropic_api_key", "")).strip()
+    ok, error = await asyncio.to_thread(claude_mod.validate_api_key, api_key)
+    if not ok:
+        return state.templates.TemplateResponse(
+            request,
+            "setup/step1.html",
+            _setup_step_context(1, {"error": error, "submitted_key_prefix": api_key[:10]}),
+            status_code=400,
+        )
+    from app.db_kv import kv_set
+
+    kv_set(state.cfg.data_root, runtime_config_mod.KV_ANTHROPIC_API_KEY, api_key)
+    log.info("setup.step1.api_key_validated_and_saved")
+    return RedirectResponse(url="/setup/2", status_code=303)
+
+
+# ---- Step 2: Auth method --------------------------------------------------
+
+
+@app.get("/setup/2", response_class=HTMLResponse)
+async def setup_step2(request: Request, _: str = Depends(require_setup_auth)) -> HTMLResponse:
+    """Auth method choice: password vs Google OAuth identity.
+    Local mode skips this entirely (no auth in local)."""
+    cfg = state.cfg
+    if cfg.is_local:
+        return RedirectResponse(url="/setup/3", status_code=303)
+    # Already authed via either method? Skip ahead.
+    from app.db_kv import kv_exists
+
+    if auth_mod.is_passphrase_set(cfg.data_root, role="adult") or kv_exists(
+        cfg.data_root, runtime_config_mod.KV_GOOGLE_IDENTITY_EMAIL
+    ):
+        return RedirectResponse(url="/setup/3", status_code=303)
+    google_creds_present = _google_creds_present(cfg)
+    return state.templates.TemplateResponse(
+        request,
+        "setup/step2.html",
+        _setup_step_context(2, {"google_creds_present": google_creds_present}),
+    )
+
+
+@app.post("/setup/2")
+async def setup_step2_submit(request: Request, _: str = Depends(require_setup_auth)) -> Response:
+    """Password path. Google path posts to /auth/google/start directly,
+    which means /setup/2 POST only handles the password form."""
+    cfg = state.cfg
+    form = await request.form()
+    passphrase = str(form.get("passphrase", ""))
+    confirm = str(form.get("passphrase_confirm", ""))
+    if passphrase != confirm:
+        return state.templates.TemplateResponse(
+            request,
+            "setup/step2.html",
+            _setup_step_context(
+                2,
+                {
+                    "google_creds_present": _google_creds_present(cfg),
+                    "error": "The two passwords didn't match.",
+                },
+            ),
+            status_code=400,
+        )
+    try:
+        auth_mod.set_passphrase(cfg.data_root, passphrase, role="adult")
+    except ValueError as e:
+        return state.templates.TemplateResponse(
+            request,
+            "setup/step2.html",
+            _setup_step_context(
+                2,
+                {
+                    "google_creds_present": _google_creds_present(cfg),
+                    "error": str(e),
+                },
+            ),
+            status_code=400,
+        )
+    return _issue_login_cookie("adult", redirect_to="/setup/3")
+
+
+# ---- Step 3: Profile + model + prompt + kid-toggle ------------------------
+
+
+@app.get("/setup/3", response_class=HTMLResponse)
+async def setup_step3(request: Request, _: str = Depends(require_setup_auth)) -> HTMLResponse:
+    return state.templates.TemplateResponse(
+        request,
+        "setup/step3.html",
+        _setup_step_context(
+            3,
+            {
+                "available_models": _AVAILABLE_MODELS,
+                "current_model": runtime_config_mod.get_default_model(
+                    state.cfg.data_root, state.cfg.default_model
+                ),
+                "current_instructions": runtime_config_mod.get_additional_instructions(
+                    state.cfg.data_root
+                ),
+            },
+        ),
+    )
+
+
+@app.post("/setup/3")
+async def setup_step3_submit(request: Request, _: str = Depends(require_setup_auth)) -> Response:
     form = await request.form()
     parent_name = str(form.get("parent_display_name", "")).strip()
-
-    # Adult mode: capture the password if it hasn't been set yet, then
-    # auto-login so the rest of the wizard is authenticated. require_setup_auth
-    # opens during initial bootstrap; once the passphrase is set, subsequent
-    # steps need a valid cookie. Skipped in local mode (no auth there).
-    just_set_adult_passphrase = False
-    if (
-        state.cfg.is_adult
-        and not state.cfg.is_local
-        and not auth_mod.is_passphrase_set(state.cfg.data_root, role="adult")
-    ):
-        passphrase = str(form.get("passphrase", ""))
-        confirm = str(form.get("passphrase_confirm", ""))
-        if passphrase != confirm:
-            return state.templates.TemplateResponse(
-                request,
-                "setup/step1.html",
-                _step1_context({"passphrase_error": "The two passwords didn't match."}),
-                status_code=400,
-            )
-        try:
-            auth_mod.set_passphrase(state.cfg.data_root, passphrase, role="adult")
-        except ValueError as e:
-            return state.templates.TemplateResponse(
-                request,
-                "setup/step1.html",
-                _step1_context({"passphrase_error": str(e)}),
-                status_code=400,
-            )
-        just_set_adult_passphrase = True
+    model = str(form.get("default_model", "")).strip()
+    instructions = str(form.get("additional_instructions", "")).strip()
 
     _setup_state_save(
         {
@@ -1053,17 +1203,27 @@ async def setup_step1_submit(request: Request, _: str = Depends(require_setup_au
             "parent_display_name": parent_name,
         }
     )
-    # Persist the parent name immediately so prompts pick it up before /setup/3.
     if state.cfg.is_kid and parent_name:
         _save_kid_parent_display_name(parent_name)
 
-    if just_set_adult_passphrase:
-        return _issue_login_cookie("adult", redirect_to="/setup/2")
-    return RedirectResponse(url="/setup/2", status_code=303)
+    from app.db_kv import kv_delete, kv_set
+
+    valid_models = {m[0] for m in _AVAILABLE_MODELS}
+    if model in valid_models:
+        kv_set(state.cfg.data_root, runtime_config_mod.KV_DEFAULT_MODEL_OVERRIDE, model)
+    if instructions:
+        kv_set(state.cfg.data_root, runtime_config_mod.KV_ADDITIONAL_INSTRUCTIONS, instructions)
+    else:
+        kv_delete(state.cfg.data_root, runtime_config_mod.KV_ADDITIONAL_INSTRUCTIONS)
+
+    return RedirectResponse(url="/setup/4", status_code=303)
 
 
-@app.get("/setup/2", response_class=HTMLResponse)
-async def setup_step2(request: Request, _: str = Depends(require_setup_auth)) -> HTMLResponse:
+# ---- Step 4: Library import (inline) -------------------------------------
+
+
+@app.get("/setup/4", response_class=HTMLResponse)
+async def setup_step4(request: Request, _: str = Depends(require_setup_auth)) -> HTMLResponse:
     state_data = _setup_state_load()
     docs = state.library.list_active() if hasattr(state, "library") else []
     can_autodraft = (
@@ -1074,29 +1234,63 @@ async def setup_step2(request: Request, _: str = Depends(require_setup_auth)) ->
     autodraft_error = state_data.pop("autodraft_error", None) if isinstance(state_data, dict) else None
     return state.templates.TemplateResponse(
         request,
-        "setup/step2.html",
-        {
-            "step": 2,
-            "data": state_data,
-            "docs": docs,
-            "can_autodraft": can_autodraft,
-            "autodraft_error": autodraft_error,
-        },
+        "setup/step4.html",
+        _setup_step_context(
+            4,
+            {
+                "docs": docs,
+                "can_autodraft": can_autodraft,
+                "autodraft_error": autodraft_error,
+            },
+        ),
     )
 
 
-@app.post("/setup/2/auto-draft")
-async def setup_step2_auto_draft(_: str = Depends(require_setup_auth)) -> Response:
+@app.post("/setup/4/upload")
+async def setup_step4_upload(
+    request: Request, _: str = Depends(require_setup_auth)
+) -> Response:
+    """Inline-upload entrypoint for step 4. Same processing as
+    /library/upload but redirects back to /setup/4 instead of /library
+    (or the streaming progress page)."""
+    form = await request.form()
+    upload = form.get("file")
+    if upload is None or not hasattr(upload, "filename"):
+        raise HTTPException(400, "no file in request")
+    raw_title = (form.get("title") or "").strip() or upload.filename or "Untitled"
+    body = await upload.read()
+    if len(body) > _LIBRARY_MAX_UPLOAD_BYTES:
+        raise HTTPException(413, f"upload exceeds {_LIBRARY_MAX_UPLOAD_BYTES} bytes")
+    if not body:
+        raise HTTPException(400, "empty upload")
+    doc_id = state.library.mint_doc_id(raw_title)
+    asyncio.create_task(
+        library_pipeline.process_doc_creation_async(
+            state.library,
+            state.extractor_registry,
+            state.status_bus,
+            doc_id=doc_id,
+            title=raw_title,
+            original_bytes=body,
+            filename=upload.filename,
+            mime=upload.content_type or "application/octet-stream",
+            source="upload",
+            tags=[],
+        )
+    )
+    return RedirectResponse(url="/setup/4", status_code=303)
+
+
+@app.post("/setup/4/auto-draft")
+async def setup_step4_auto_draft(_: str = Depends(require_setup_auth)) -> Response:
     """Run the LLM pass over uploaded library docs, populate the four
-    setup textareas with the suggestions, redirect back to /setup/2."""
+    setup textareas with the suggestions, redirect back to /setup/4."""
     claude = claude_mod.get_client(runtime_config_mod.get_anthropic_key(state.cfg.data_root))
     if state.cfg.is_local or claude is None:
-        # Local mode has no API access; the button shouldn't have been
-        # rendered. Defensive 404.
         raise HTTPException(404, "auto-draft requires API access (dev/prod mode)")
     docs = state.library.list_active()
     if not docs:
-        return RedirectResponse(url="/setup/2", status_code=303)
+        return RedirectResponse(url="/setup/4", status_code=303)
     try:
         suggestions = await asyncio.to_thread(
             setup_autodraft_mod.auto_draft_profile,
@@ -1107,15 +1301,15 @@ async def setup_step2_auto_draft(_: str = Depends(require_setup_auth)) -> Respon
     except Exception as e:  # noqa: BLE001
         log.warning("setup.autodraft.failed", error=str(e))
         _setup_state_save({"autodraft_error": f"Auto-draft failed: {e}"})
-        return RedirectResponse(url="/setup/2", status_code=303)
+        return RedirectResponse(url="/setup/4", status_code=303)
     if suggestions:
         _setup_state_save(suggestions)
         log.info("setup.autodraft.applied", sections=sorted(suggestions.keys()))
-    return RedirectResponse(url="/setup/2", status_code=303)
+    return RedirectResponse(url="/setup/4", status_code=303)
 
 
-@app.post("/setup/2")
-async def setup_step2_submit(request: Request, _: str = Depends(require_setup_auth)) -> Response:
+@app.post("/setup/4")
+async def setup_step4_submit(request: Request, _: str = Depends(require_setup_auth)) -> Response:
     form = await request.form()
     _setup_state_save(
         {
@@ -1125,37 +1319,51 @@ async def setup_step2_submit(request: Request, _: str = Depends(require_setup_au
             "section_for": str(form.get("section_for", "")).strip(),
         }
     )
-    return RedirectResponse(url="/setup/3", status_code=303)
+    return RedirectResponse(url="/setup/5", status_code=303)
 
 
-@app.get("/setup/3", response_class=HTMLResponse)
-async def setup_step3(request: Request, _: str = Depends(require_setup_auth)) -> HTMLResponse:
-    state_data = _setup_state_load()
+# ---- Step 5: Recap + theme + therapist name → commit ---------------------
+
+
+@app.get("/setup/5", response_class=HTMLResponse)
+async def setup_step5(request: Request, _: str = Depends(require_setup_auth)) -> HTMLResponse:
     docs = state.library.list_active() if hasattr(state, "library") else []
     return state.templates.TemplateResponse(
         request,
-        "setup/step3.html",
-        {
-            "step": 3,
-            "data": state_data,
-            "docs": docs,
-        },
+        "setup/step5.html",
+        _setup_step_context(
+            5,
+            {
+                "docs": docs,
+                "current_alias": runtime_config_mod.get_therapist_alias(state.cfg.data_root),
+                "valid_themes": VALID_THEMES,
+            },
+        ),
     )
 
 
-@app.post("/setup/3")
-async def setup_step3_submit(_: str = Depends(require_setup_auth)) -> Response:
-    """Commit setup: write 01_background.md, drop the working state, mark complete."""
-    state_data = _setup_state_load()
+@app.post("/setup/5")
+async def setup_step5_submit(request: Request, _: str = Depends(require_setup_auth)) -> Response:
+    """Final commit: persist alias + theme, write 01_background.md, mark complete."""
     cfg = state.cfg
+    state_data = _setup_state_load()
 
-    # Compose a single 01_background.md from the four textareas. ContextLoader
-    # reads this verbatim into block 1.
+    form = await request.form()
+    alias = str(form.get("therapist_alias", "")).strip()[:40]
+    theme = str(form.get("theme", "")).strip()
+    from app.db_kv import kv_delete, kv_set
+
+    if alias and alias.lower() != "claudia":
+        kv_set(cfg.data_root, runtime_config_mod.KV_THERAPIST_ALIAS, alias)
+    else:
+        kv_delete(cfg.data_root, runtime_config_mod.KV_THERAPIST_ALIAS)
+
+    # Compose 01_background.md from the four step-4 textareas + step-3
+    # profile fields. Same composer as before; just moved here.
     target_label = cfg.display_name or state_data.get("preferred_name") or "the user"
     if cfg.is_kid:
         target_label = cfg.display_name or "this kid"
-    sections = []
-    sections.append(f"# About {target_label}\n")
+    sections: list[str] = [f"# About {target_label}\n"]
     if state_data.get("section_who"):
         sections.append("## Who they are right now\n\n" + state_data["section_who"].strip() + "\n")
     if state_data.get("section_stressors"):
@@ -1169,25 +1377,34 @@ async def setup_step3_submit(_: str = Depends(require_setup_auth)) -> Response:
     if state_data.get("country") or state_data.get("region"):
         loc = ", ".join(x for x in [state_data.get("region", ""), state_data.get("country", "")] if x)
         sections.append(f"## Location\n\n{loc}\n")
-
     body = "\n".join(sections).strip() + "\n"
     bg_path = cfg.data_root / "context" / "01_background.md"
     bg_path.parent.mkdir(parents=True, exist_ok=True)
     bg_path.write_text(body, encoding="utf-8")
 
-    # Mark complete; clean up working state.
     _mark_setup_complete()
     _setup_state_clear()
-
     log.info("setup.completed", data_root=str(cfg.data_root))
-    # Adult → home; kid → admin home.
+
     target = "/admin" if cfg.is_kid else "/"
-    # Adult mode: auto-login by setting the session cookie now. The user
-    # picked their password in step 1, so the next page load should be
-    # authenticated rather than bouncing to /login.
+    resp: Response
     if cfg.is_adult and auth_mod.is_passphrase_set(cfg.data_root, role="adult"):
-        return _issue_login_cookie("adult", redirect_to=target)
-    return RedirectResponse(url=target, status_code=303)
+        # Auto-login (in case password path was used + cookie expired between
+        # step 2 and step 5 — rare but possible during long wizard sessions).
+        resp = _issue_login_cookie("adult", redirect_to=target)
+    else:
+        resp = RedirectResponse(url=target, status_code=303)
+    # Persist the chosen theme as a 1-year cookie regardless of mode.
+    if theme in VALID_THEMES:
+        resp.set_cookie(
+            THEME_COOKIE_NAME,
+            theme,
+            max_age=60 * 60 * 24 * 365,
+            path="/",
+            samesite="Lax",
+            httponly=False,
+        )
+    return resp
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -1195,7 +1412,7 @@ async def home(request: Request, _: str = Depends(require_auth)) -> Response:
     # First-run gate. If the parent (or adult) hasn't run the wizard yet,
     # bounce here. Existing live deploys are auto-marked complete on startup.
     if not _setup_complete():
-        return RedirectResponse(url="/setup/1", status_code=303)
+        return RedirectResponse(url="/setup", status_code=303)
     sessions = state.store.list_sessions()
     active = state.store.active_session()
     mood_line = _mood_sparkline(state.cfg.data_root)

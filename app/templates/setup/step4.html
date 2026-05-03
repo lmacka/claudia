@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% block title %}claudia — setup, library{% endblock %}
+{% block content %}
+
+<nav class="nav" aria-label="primary">
+  <span class="brand">claudia</span>
+  <span class="spacer"></span>
+  <span class="muted"><small>first-run setup</small></span>
+</nav>
+
+<h1>Documents claudia should know about.</h1>
+<p class="muted">Drop in psych assessments, journals, important emails, screenshots, plans, reports. Optional — you can skip and add later.</p>
+
+<div class="steps">
+  <div class="step done"><span class="num">&check;</span>API key</div>
+  <div class="step done"><span class="num">&check;</span>auth</div>
+  <div class="step done"><span class="num">&check;</span>profile</div>
+  <div class="step active"><span class="num">4</span>library</div>
+  <div class="step"><span class="num">5</span>recap</div>
+</div>
+
+<section class="panel">
+  <h3>Upload a document</h3>
+  <form method="post" action="/setup/4/upload" enctype="multipart/form-data">
+    <fieldset>
+      <label for="file">File (PDF, DOCX, DOC, image, .txt) — max 25 MB</label>
+      <input type="file" id="file" name="file" accept=".pdf,.docx,.doc,.txt,.md,.png,.jpg,.jpeg,.heic,.eml" required>
+      <label for="title">Title (optional — defaults to filename)</label>
+      <input type="text" id="title" name="title" placeholder="(filename used if blank)">
+      <button type="submit" class="primary">Upload &amp; extract</button>
+    </fieldset>
+  </form>
+</section>
+
+<section class="panel">
+  <h3>Documents in your library{% if docs %} ({{ docs | length }}){% endif %}</h3>
+  {% if docs %}
+    <ul class="session-list">
+      {% for d in docs %}
+        <li>
+          <div class="session-list-main">
+            <strong>{{ d.title }}</strong>
+            <small class="muted">{{ d.kind }}{% if d.original_date %} · {{ d.original_date.isoformat() }}{% endif %}{% if d.tags %} · {{ d.tags | join(', ') }}{% endif %}</small>
+          </div>
+          {% if d.verification %}
+            <span class="dot {% if d.verification == 'ok' %}green{% elif d.verification == 'warn' %}amber{% else %}red{% endif %}"
+                  title="extraction {{ d.verification }}"></span>
+          {% endif %}
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="muted"><small>No documents yet. Skip this step or upload a few above before continuing.</small></p>
+  {% endif %}
+</section>
+
+{% if can_autodraft %}
+<section class="panel">
+  <h3>Auto-draft profile from your documents</h3>
+  <p class="muted"><small>Reads everything you've uploaded above and drafts the four profile sections below. Edit any of them before continuing. Costs one Sonnet call (a few cents); takes ~10 seconds. Re-run after uploading more.</small></p>
+  <form method="post" action="/setup/4/auto-draft" style="display: inline;">
+    <button type="submit" class="primary">Draft from {{ docs | length }} document{{ "" if docs | length == 1 else "s" }}</button>
+  </form>
+  {% if autodraft_error %}
+    <p style="color: var(--danger); margin-top: 8px;"><small>{{ autodraft_error }}</small></p>
+  {% endif %}
+</section>
+{% endif %}
+
+<form method="post" action="/setup/4">
+  <section class="panel">
+    <h3>Profile</h3>
+    <p class="muted"><small>Edit any of this. Claudia uses these as the starting point — they get refined by the auditor over time as sessions accumulate.{% if can_autodraft %} Use the auto-draft button above to pre-fill from your documents.{% endif %}</small></p>
+
+    <label for="section_who">One paragraph: who you are right now</label>
+    <textarea id="section_who" name="section_who" rows="4">{{ data.section_who or '' }}</textarea>
+
+    <label for="section_stressors">Active stressors right now</label>
+    <textarea id="section_stressors" name="section_stressors" rows="3">{{ data.section_stressors or '' }}</textarea>
+
+    <label for="section_never">What claudia should never do</label>
+    <textarea id="section_never" name="section_never" rows="3">{{ data.section_never or '' }}</textarea>
+
+    <label for="section_for">What you want claudia to do for you</label>
+    <textarea id="section_for" name="section_for" rows="3">{{ data.section_for or '' }}</textarea>
+  </section>
+
+  <p style="margin-top: 18px;">
+    <a href="/setup/3" role="button" class="outline">&larr; back</a>
+    <button type="submit" class="primary big">next: review and finish &rarr;</button>
+  </p>
+</form>
+
+{% endblock %}
