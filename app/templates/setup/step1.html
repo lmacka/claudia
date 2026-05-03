@@ -24,6 +24,22 @@
 
 <form method="post" action="/setup/1">
 
+  {% if claudia_mode == "adult" and not adult_passphrase_set %}
+  <section class="panel">
+    <h3>Pick a password</h3>
+    <p class="muted"><small>You'll log in with this every time. Minimum 12 characters. Write it down somewhere safe — there's no recovery flow yet.</small></p>
+    <label for="passphrase" class="visually-hidden">password</label>
+    <input type="password" id="passphrase" name="passphrase" required minlength="12"
+           autocomplete="new-password" style="max-width: 320px;">
+    <label for="passphrase_confirm" class="visually-hidden">confirm password</label>
+    <input type="password" id="passphrase_confirm" name="passphrase_confirm" required minlength="12"
+           autocomplete="new-password" placeholder="type it again" style="max-width: 320px; margin-top: 8px;">
+    {% if passphrase_error %}
+      <p style="color: var(--danger); margin-top: 8px;">{{ passphrase_error }}</p>
+    {% endif %}
+  </section>
+  {% endif %}
+
   <section class="panel">
     <h3>{% if claudia_mode == "kid" %}Who is this claudia for?{% else %}Who is claudia for?{% endif %}</h3>
 

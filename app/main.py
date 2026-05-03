@@ -47,6 +47,7 @@ from fastapi.templating import Jinja2Templates
 from app import auth as auth_mod
 from app import config as config_module
 from app import google_auth, library_pipeline, safety
+from app import setup_autodraft as setup_autodraft_mod
 from app import summariser as summariser_mod
 from app import tool_loop as tool_loop_mod
 from app.claude import SONNET, ClaudeClient, Usage
@@ -209,7 +210,8 @@ class AppState:
     templates: Jinja2Templates
     app_root: Path
     rate_limiter: auth_mod.IPRateLimiter
-    kid_session_store: auth_mod.KidSessionStore  # token -> kid display_name, persisted
+    kid_session_store: auth_mod.SessionStore  # token -> kid display_name, persisted
+    adult_session_store: auth_mod.SessionStore  # token -> adult display_name, persisted
     library: Library
     extractor_registry: Any
     status_bus: StatusBus
@@ -307,7 +309,8 @@ async def lifespan(app: FastAPI):
     )
     state.claude = None if cfg.is_local else ClaudeClient(api_key=cfg.anthropic_api_key)
     state.rate_limiter = auth_mod.IPRateLimiter()
-    state.kid_session_store = auth_mod.KidSessionStore(cfg.data_root)
+    state.kid_session_store = auth_mod.SessionStore(cfg.data_root, role="kid")
+    state.adult_session_store = auth_mod.SessionStore(cfg.data_root, role="adult")
 
     state.library = Library(cfg.data_root / "library")
     if state.claude is not None:
@@ -403,50 +406,56 @@ def _client_ip(request: Request) -> str:
     return "unknown"
 
 
-def require_auth(
-    request: Request,
-    credentials: HTTPBasicCredentials | None = Depends(_basic_auth),
-) -> str:
-    """
-    Auth for the kid-facing surface (/, /session/*, etc.).
+def _adult_cookie_display_name(request: Request) -> str | None:
+    """Return the adult display_name if a valid adult cookie is present."""
+    cookie = request.cookies.get(auth_mod.ADULT_COOKIE_NAME, "")
+    if not cookie:
+        return None
+    return state.adult_session_store.get(cookie)
 
-    Adult mode: same as before — basic auth.
-    Kid mode: cookie-based session. Kid must have logged in via /login.
+
+def _kid_cookie_display_name(request: Request) -> str | None:
+    cookie = request.cookies.get(auth_mod.KID_COOKIE_NAME, "")
+    if not cookie:
+        return None
+    return state.kid_session_store.get(cookie)
+
+
+def require_auth(request: Request) -> str:
+    """Cookie-based auth for the user-facing surface (/, /session/*, etc.).
+
+    Both modes use the same shape: a passphrase set during /setup or first
+    /login, then a `claudia-adult` or `claudia-kid` session cookie. No HTTP
+    Basic Auth on user-facing routes any more.
     """
     cfg = state.cfg
     if cfg.is_local:
         return "liam"
 
-    if cfg.is_kid:
-        cookie = request.cookies.get(auth_mod.KID_COOKIE_NAME, "")
-        if cookie:
-            display = state.kid_session_store.get(cookie)
-            if display is not None:
-                return display
-        # No valid cookie — redirect to /login. We raise an exception
-        # the caller transforms into a redirect.
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="kid-not-logged-in",
-            headers={"Location": "/login"},
-        )
-
-    # Adult mode
-    if credentials is None or not _check_basic_credentials(credentials):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Unauthorized",
-            headers={"WWW-Authenticate": 'Basic realm="claudia"'},
-        )
-    return credentials.username
+    role: auth_mod.Role = "kid" if cfg.is_kid else "adult"
+    display = _kid_cookie_display_name(request) if cfg.is_kid else _adult_cookie_display_name(request)
+    if display is not None:
+        return display
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail=f"{role}-not-logged-in",
+        headers={"Location": "/login"},
+    )
 
 
 def require_setup_auth(
     request: Request,
-    credentials: HTTPBasicCredentials | None = Depends(_basic_auth),
     admin_credentials: HTTPBasicCredentials | None = Depends(_admin_basic_auth),
 ) -> str:
-    """Auth for /setup/* — adult uses regular basic auth, kid uses parent admin."""
+    """Auth for /setup/*.
+
+    Adult mode:
+      - If no passphrase has been set yet (fresh install): allow anyone to
+        run the wizard. The wizard's password step writes the passphrase.
+      - Otherwise: require a valid adult cookie (i.e., already logged in).
+    Kid mode:
+      - Always parent-admin basic auth (BASIC_AUTH_PASSWORD).
+    """
     cfg = state.cfg
     if cfg.is_local:
         return "liam"
@@ -458,13 +467,17 @@ def require_setup_auth(
             detail="setup is parent-admin only in kid mode",
             headers={"WWW-Authenticate": 'Basic realm="claudia-admin"'},
         )
-    if credentials is None or not _check_basic_credentials(credentials):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Unauthorized",
-            headers={"WWW-Authenticate": 'Basic realm="claudia"'},
-        )
-    return credentials.username
+    # Adult mode: open during initial bootstrap, cookie-gated thereafter.
+    if not auth_mod.is_passphrase_set(cfg.data_root, role="adult"):
+        return "setup"
+    display = _adult_cookie_display_name(request)
+    if display is not None:
+        return display
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="adult-not-logged-in",
+        headers={"Location": "/login"},
+    )
 
 
 def require_parent_admin(
@@ -528,10 +541,11 @@ from fastapi.exceptions import HTTPException as _HTTPExc  # noqa: E402
 
 
 @app.exception_handler(_HTTPExc)
-async def _kid_login_redirect(request: Request, exc: _HTTPExc) -> Response:
+async def _login_redirect(request: Request, exc: _HTTPExc) -> Response:
+    """Cookie-auth 401s redirect to /login instead of showing the raw error."""
     if (
         exc.status_code == 401
-        and exc.detail == "kid-not-logged-in"
+        and exc.detail in ("kid-not-logged-in", "adult-not-logged-in")
         and not request.url.path.startswith("/login")
     ):
         return RedirectResponse(url="/login", status_code=303)
@@ -548,17 +562,37 @@ async def _kid_login_redirect(request: Request, exc: _HTTPExc) -> Response:
 # ---------------------------------------------------------------------------
 
 
+def _login_role() -> auth_mod.Role:
+    """Which role the current /login flow is for. Per-mode singleton."""
+    return "kid" if state.cfg.is_kid else "adult"
+
+
+def _login_session_store() -> auth_mod.SessionStore:
+    return state.kid_session_store if state.cfg.is_kid else state.adult_session_store
+
+
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request) -> HTMLResponse:
     cfg = state.cfg
-    if not cfg.is_kid:
-        # Adult mode: shouldn't be here, just redirect home
+    role = _login_role()
+    # Already logged in? Bounce home.
+    existing = (
+        _kid_cookie_display_name(request) if role == "kid" else _adult_cookie_display_name(request)
+    )
+    if existing is not None:
         return RedirectResponse(url="/", status_code=303)
-    is_first_time = not auth_mod.is_passphrase_set(cfg.data_root)
+
+    is_first_time = not auth_mod.is_passphrase_set(cfg.data_root, role=role)
+    # Adult mode first-time: send to /setup/1 (the wizard captures the
+    # password); they shouldn't be at /login at all.
+    if role == "adult" and is_first_time:
+        return RedirectResponse(url="/setup/1", status_code=303)
+
     return state.templates.TemplateResponse(
         request,
-        "kid_login.html",
+        "login.html",
         {
+            "role": role,
             "is_first_time": is_first_time,
             "display_name": cfg.display_name,
         },
@@ -568,12 +602,11 @@ async def login_page(request: Request) -> HTMLResponse:
 @app.post("/login")
 async def login_submit(request: Request) -> Response:
     cfg = state.cfg
-    if not cfg.is_kid:
-        return RedirectResponse(url="/", status_code=303)
+    role = _login_role()
 
     ip = _client_ip(request)
     if not state.rate_limiter.check(ip):
-        log.warning("kid_auth.rate_limited", ip=ip)
+        log.warning("auth.rate_limited", role=role, ip=ip)
         return Response(
             content="Too many attempts. Try again in a few minutes.",
             status_code=429,
@@ -583,15 +616,17 @@ async def login_submit(request: Request) -> Response:
     passphrase = str(form.get("passphrase", ""))
     confirm = str(form.get("confirm", ""))
 
-    is_first_time = not auth_mod.is_passphrase_set(cfg.data_root)
+    is_first_time = not auth_mod.is_passphrase_set(cfg.data_root, role=role)
 
-    if is_first_time:
-        # Setup flow: passphrase + confirm
+    if is_first_time and role == "kid":
+        # Kid first-time: setup flow runs HERE (parent has not pre-set the
+        # kid passphrase; the kid sets their own at first login).
         if passphrase != confirm:
             return state.templates.TemplateResponse(
                 request,
-                "kid_login.html",
+                "login.html",
                 {
+                    "role": role,
                     "is_first_time": True,
                     "display_name": cfg.display_name,
                     "error": "The two passwords didn't match.",
@@ -599,30 +634,33 @@ async def login_submit(request: Request) -> Response:
                 status_code=400,
             )
         try:
-            auth_mod.set_passphrase(cfg.data_root, passphrase)
+            auth_mod.set_passphrase(cfg.data_root, passphrase, role="kid")
         except ValueError as e:
             return state.templates.TemplateResponse(
                 request,
-                "kid_login.html",
+                "login.html",
                 {
+                    "role": role,
                     "is_first_time": True,
                     "display_name": cfg.display_name,
                     "error": str(e),
                 },
                 status_code=400,
             )
-        # First passphrase set. v1 dev mode: no encryption, no break-glass
-        # envelope. Continue to login below to set the cookie.
-        log.info("kid_auth.passphrase_set")
 
-    # Login flow: verify
-    if not auth_mod.verify_passphrase(cfg.data_root, passphrase):
+    if is_first_time and role == "adult":
+        # Adult mode shouldn't reach /login first-time — the wizard handles
+        # passphrase capture. Bounce there.
+        return RedirectResponse(url="/setup/1", status_code=303)
+
+    if not auth_mod.verify_passphrase(cfg.data_root, passphrase, role=role):
         state.rate_limiter.record(ip)
-        log.warning("kid_auth.verify_failed", ip=ip)
+        log.warning("auth.verify_failed", role=role, ip=ip)
         return state.templates.TemplateResponse(
             request,
-            "kid_login.html",
+            "login.html",
             {
+                "role": role,
                 "is_first_time": False,
                 "display_name": cfg.display_name,
                 "error": "That password didn't match. Try again.",
@@ -631,15 +669,21 @@ async def login_submit(request: Request) -> Response:
         )
 
     state.rate_limiter.reset(ip)
-    token = auth_mod.new_kid_session_token()
-    state.kid_session_store.add(token, cfg.display_name or "kid")
-    log.info("kid_auth.login_success", display_name=cfg.display_name)
+    return _issue_login_cookie(role, redirect_to="/")
 
-    resp = RedirectResponse(url="/", status_code=303)
+
+def _issue_login_cookie(role: auth_mod.Role, redirect_to: str) -> Response:
+    """Mint a session token, persist it, and set the response cookie."""
+    cfg = state.cfg
+    token = auth_mod.new_session_token()
+    _login_session_store().add(token, cfg.display_name or role)
+    log.info("auth.login_success", role=role, display_name=cfg.display_name)
+
+    resp = RedirectResponse(url=redirect_to, status_code=303)
     resp.set_cookie(
-        key=auth_mod.KID_COOKIE_NAME,
+        key=auth_mod.cookie_name(role),
         value=token,
-        max_age=auth_mod.KID_COOKIE_TTL_SECONDS,
+        max_age=auth_mod.COOKIE_TTL_SECONDS,
         httponly=True,
         secure=True,
         samesite="lax",
@@ -651,12 +695,12 @@ async def login_submit(request: Request) -> Response:
 @app.post("/logout")
 async def logout(request: Request) -> Response:
     cfg = state.cfg
-    if cfg.is_kid:
-        cookie = request.cookies.get(auth_mod.KID_COOKIE_NAME, "")
-        if cookie:
-            state.kid_session_store.remove(cookie)
+    role: auth_mod.Role = "kid" if cfg.is_kid else "adult"
+    cookie = request.cookies.get(auth_mod.cookie_name(role), "")
+    if cookie:
+        _login_session_store().remove(cookie)
     resp = RedirectResponse(url="/login", status_code=303)
-    resp.delete_cookie(auth_mod.KID_COOKIE_NAME, path="/")
+    resp.delete_cookie(auth_mod.cookie_name(role), path="/")
     return resp
 
 
@@ -842,26 +886,65 @@ async def setup_root(_: str = Depends(require_setup_auth)) -> Response:
     return RedirectResponse(url="/setup/1", status_code=303)
 
 
+def _step1_context(extra: dict | None = None) -> dict:
+    state_data = _setup_state_load()
+    # In local mode the password field is hidden — there's no auth at all.
+    passphrase_set = state.cfg.is_local or auth_mod.is_passphrase_set(
+        state.cfg.data_root, role="adult"
+    )
+    ctx = {
+        "step": 1,
+        "data": state_data,
+        "cfg_display_name": state.cfg.display_name,
+        "cfg_country": state.cfg.country,
+        "cfg_parent_display_name": effective_kid_parent_display_name(),
+        "adult_passphrase_set": passphrase_set,
+    }
+    if extra:
+        ctx.update(extra)
+    return ctx
+
+
 @app.get("/setup/1", response_class=HTMLResponse)
 async def setup_step1(request: Request, _: str = Depends(require_setup_auth)) -> HTMLResponse:
-    state_data = _setup_state_load()
-    return state.templates.TemplateResponse(
-        request,
-        "setup/step1.html",
-        {
-            "step": 1,
-            "data": state_data,
-            "cfg_display_name": state.cfg.display_name,
-            "cfg_country": state.cfg.country,
-            "cfg_parent_display_name": effective_kid_parent_display_name(),
-        },
-    )
+    return state.templates.TemplateResponse(request, "setup/step1.html", _step1_context())
 
 
 @app.post("/setup/1")
 async def setup_step1_submit(request: Request, _: str = Depends(require_setup_auth)) -> Response:
     form = await request.form()
     parent_name = str(form.get("parent_display_name", "")).strip()
+
+    # Adult mode: capture the password if it hasn't been set yet, then
+    # auto-login so the rest of the wizard is authenticated. require_setup_auth
+    # opens during initial bootstrap; once the passphrase is set, subsequent
+    # steps need a valid cookie. Skipped in local mode (no auth there).
+    just_set_adult_passphrase = False
+    if (
+        state.cfg.is_adult
+        and not state.cfg.is_local
+        and not auth_mod.is_passphrase_set(state.cfg.data_root, role="adult")
+    ):
+        passphrase = str(form.get("passphrase", ""))
+        confirm = str(form.get("passphrase_confirm", ""))
+        if passphrase != confirm:
+            return state.templates.TemplateResponse(
+                request,
+                "setup/step1.html",
+                _step1_context({"passphrase_error": "The two passwords didn't match."}),
+                status_code=400,
+            )
+        try:
+            auth_mod.set_passphrase(state.cfg.data_root, passphrase, role="adult")
+        except ValueError as e:
+            return state.templates.TemplateResponse(
+                request,
+                "setup/step1.html",
+                _step1_context({"passphrase_error": str(e)}),
+                status_code=400,
+            )
+        just_set_adult_passphrase = True
+
     _setup_state_save(
         {
             "preferred_name": str(form.get("preferred_name", "")).strip(),
@@ -874,6 +957,9 @@ async def setup_step1_submit(request: Request, _: str = Depends(require_setup_au
     # Persist the parent name immediately so prompts pick it up before /setup/3.
     if state.cfg.is_kid and parent_name:
         _save_kid_parent_display_name(parent_name)
+
+    if just_set_adult_passphrase:
+        return _issue_login_cookie("adult", redirect_to="/setup/2")
     return RedirectResponse(url="/setup/2", status_code=303)
 
 
@@ -881,6 +967,12 @@ async def setup_step1_submit(request: Request, _: str = Depends(require_setup_au
 async def setup_step2(request: Request, _: str = Depends(require_setup_auth)) -> HTMLResponse:
     state_data = _setup_state_load()
     docs = state.library.list_active() if hasattr(state, "library") else []
+    can_autodraft = (
+        bool(docs)
+        and not state.cfg.is_local
+        and state.claude is not None
+    )
+    autodraft_error = state_data.pop("autodraft_error", None) if isinstance(state_data, dict) else None
     return state.templates.TemplateResponse(
         request,
         "setup/step2.html",
@@ -888,8 +980,38 @@ async def setup_step2(request: Request, _: str = Depends(require_setup_auth)) ->
             "step": 2,
             "data": state_data,
             "docs": docs,
+            "can_autodraft": can_autodraft,
+            "autodraft_error": autodraft_error,
         },
     )
+
+
+@app.post("/setup/2/auto-draft")
+async def setup_step2_auto_draft(_: str = Depends(require_setup_auth)) -> Response:
+    """Run the LLM pass over uploaded library docs, populate the four
+    setup textareas with the suggestions, redirect back to /setup/2."""
+    if state.cfg.is_local or state.claude is None:
+        # Local mode has no API access; the button shouldn't have been
+        # rendered. Defensive 404.
+        raise HTTPException(404, "auto-draft requires API access (dev/prod mode)")
+    docs = state.library.list_active()
+    if not docs:
+        return RedirectResponse(url="/setup/2", status_code=303)
+    try:
+        suggestions = await asyncio.to_thread(
+            setup_autodraft_mod.auto_draft_profile,
+            state.claude,
+            state.cfg.default_model,
+            state.library,
+        )
+    except Exception as e:  # noqa: BLE001
+        log.warning("setup.autodraft.failed", error=str(e))
+        _setup_state_save({"autodraft_error": f"Auto-draft failed: {e}"})
+        return RedirectResponse(url="/setup/2", status_code=303)
+    if suggestions:
+        _setup_state_save(suggestions)
+        log.info("setup.autodraft.applied", sections=sorted(suggestions.keys()))
+    return RedirectResponse(url="/setup/2", status_code=303)
 
 
 @app.post("/setup/2")
@@ -960,6 +1082,11 @@ async def setup_step3_submit(_: str = Depends(require_setup_auth)) -> Response:
     log.info("setup.completed", data_root=str(cfg.data_root))
     # Adult → home; kid → admin home.
     target = "/admin" if cfg.is_kid else "/"
+    # Adult mode: auto-login by setting the session cookie now. The user
+    # picked their password in step 1, so the next page load should be
+    # authenticated rather than bouncing to /login.
+    if cfg.is_adult and auth_mod.is_passphrase_set(cfg.data_root, role="adult"):
+        return _issue_login_cookie("adult", redirect_to=target)
     return RedirectResponse(url=target, status_code=303)
 
 

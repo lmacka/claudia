@@ -110,8 +110,11 @@ def load() -> Config:
     if ops_mode in ("dev", "prod"):
         if not api_key:
             raise RuntimeError("ANTHROPIC_API_KEY is required in dev/prod mode")
-        if not auth_pw:
-            raise RuntimeError("BASIC_AUTH_PASSWORD is required in dev/prod mode")
+        # BASIC_AUTH_PASSWORD only required in kid mode (parent admin password
+        # for /admin/*). Adult mode auth is now cookie-based — the password
+        # is set by the user during /setup/1.
+        if mode == "kid" and not auth_pw:
+            raise RuntimeError("BASIC_AUTH_PASSWORD is required in kid mode (parent admin)")
 
     return Config(
         mode=mode,  # type: ignore[arg-type]

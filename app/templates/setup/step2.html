@@ -53,10 +53,23 @@
   {% endif %}
 </section>
 
+{% if can_autodraft %}
+<section class="panel">
+  <h3>Auto-draft profile from your documents</h3>
+  <p class="muted"><small>Reads everything you've uploaded above and drafts the four profile sections below. You can edit any of them before continuing. Costs one Sonnet call (a few cents); takes ~10 seconds. Run it again any time you upload more docs.</small></p>
+  <form method="post" action="/setup/2/auto-draft" style="display: inline;">
+    <button type="submit" class="primary">Draft from {{ docs | length }} document{{ "" if docs | length == 1 else "s" }}</button>
+  </form>
+  {% if autodraft_error %}
+    <p style="color: var(--danger); margin-top: 8px;"><small>{{ autodraft_error }}</small></p>
+  {% endif %}
+</section>
+{% endif %}
+
 <form method="post" action="/setup/2">
   <section class="panel">
     <h3>Profile {% if claudia_mode == "kid" %}of {{ display_name }}{% endif %}</h3>
-    <p class="muted"><small>Edit any of this. Claudia uses these as the starting point — they get refined by the auditor over time as sessions accumulate.</small></p>
+    <p class="muted"><small>Edit any of this. Claudia uses these as the starting point — they get refined by the auditor over time as sessions accumulate.{% if can_autodraft %} Use the auto-draft button above to pre-fill from your documents.{% endif %}</small></p>
 
     <label for="section_who">One paragraph: {% if claudia_mode == "kid" %}who they are right now{% else %}who you are right now{% endif %}</label>
     <textarea id="section_who" name="section_who" rows="4">{{ data.section_who or '' }}</textarea>
