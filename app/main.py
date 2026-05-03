@@ -163,6 +163,16 @@ def _google_enabled_context(request: Request) -> dict:
     return {"google_enabled": _google_enabled(state.cfg)}
 
 
+def _runtime_overrides_context(request: Request) -> dict:
+    """Jinja2Templates context_processor: per-request therapist alias +
+    additional instructions. Pre-fills /settings inputs with current values.
+    Empty string when neither env nor kv has set them."""
+    return {
+        "therapist_alias": runtime_config_mod.get_therapist_alias(state.cfg.data_root),
+        "additional_instructions": runtime_config_mod.get_additional_instructions(state.cfg.data_root),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Google integration toggle (adult mode) — file-backed override of the
 # CLAUDIA_ADULT_INTEGRATIONS_GOOGLE_ENABLED env var. Lets the user flip
@@ -318,6 +328,7 @@ async def lifespan(app: FastAPI):
         display_name=cfg.display_name,
         kid_parent_display_name_provider=effective_kid_parent_display_name,
         people_md_provider=lambda: state.people.render_people_md() if hasattr(state, "people") else "",
+        additional_instructions_provider=lambda: runtime_config_mod.get_additional_instructions(cfg.data_root),
     )
     state.rate_limiter = auth_mod.IPRateLimiter()
     state.kid_session_store = auth_mod.SessionStore(cfg.data_root, role="kid")
@@ -354,7 +365,12 @@ async def lifespan(app: FastAPI):
 
     state.templates = Jinja2Templates(
         directory=str(state.app_root / "templates"),
-        context_processors=[_theme_context, _parent_name_context, _google_enabled_context],
+        context_processors=[
+            _theme_context,
+            _parent_name_context,
+            _google_enabled_context,
+            _runtime_overrides_context,
+        ],
     )
     state.templates.env.globals["asset_version"] = str(int(_time.time()))
     state.templates.env.globals["claudia_mode"] = cfg.mode
@@ -767,6 +783,51 @@ async def settings_google_integration(
     form = await request.form()
     enabled = str(form.get("enabled", "")).strip().lower() in ("1", "true", "yes", "on")
     _save_google_enabled(enabled)
+    return RedirectResponse(url="/settings", status_code=303)
+
+
+@app.post("/settings/therapist-name")
+async def settings_therapist_name(
+    request: Request, _: str = Depends(require_auth)
+) -> Response:
+    """Persist therapist alias (the bot's preferred name in copy). Adult only.
+
+    v0.8 phase B: writes to kv_store via runtime_config. Empty string clears
+    the override (bot reverts to default 'claudia' framing). 40-char cap
+    matches the input maxlength.
+    """
+    if not state.cfg.is_adult:
+        raise HTTPException(404, "therapist name is adult-mode only")
+    from app.db_kv import kv_delete, kv_set
+
+    form = await request.form()
+    value = str(form.get("therapist_alias", "")).strip()[:40]
+    if value:
+        kv_set(state.cfg.data_root, runtime_config_mod.KV_THERAPIST_ALIAS, value)
+    else:
+        kv_delete(state.cfg.data_root, runtime_config_mod.KV_THERAPIST_ALIAS)
+    return RedirectResponse(url="/settings", status_code=303)
+
+
+@app.post("/settings/additional-instructions")
+async def settings_additional_instructions(
+    request: Request, _: str = Depends(require_auth)
+) -> Response:
+    """Persist free-form additional companion instructions. Adult only.
+
+    Appended to companion-adult.md at assemble time via ContextLoader's
+    additional_instructions_provider (Phase B). Empty string clears.
+    """
+    if not state.cfg.is_adult:
+        raise HTTPException(404, "additional instructions is adult-mode only")
+    from app.db_kv import kv_delete, kv_set
+
+    form = await request.form()
+    value = str(form.get("additional_instructions", "")).strip()
+    if value:
+        kv_set(state.cfg.data_root, runtime_config_mod.KV_ADDITIONAL_INSTRUCTIONS, value)
+    else:
+        kv_delete(state.cfg.data_root, runtime_config_mod.KV_ADDITIONAL_INSTRUCTIONS)
     return RedirectResponse(url="/settings", status_code=303)
 
 
@@ -1231,10 +1292,30 @@ def _seed_opener_safe(session_id: str, model: str, blocks) -> None:
             pass
 
 
+def _opener_alias_directive(data_root: Path) -> str:
+    """If the user set a non-default therapist alias, return a one-line bot
+    directive to prepend to the synthetic-user 'Begin the session.' content.
+    Drives the once-per-session 'you can call me X' intro per the v0.8 plan
+    (decision 2: alias-only, no full rename cascade).
+
+    Returns empty string when no alias is set or the alias is the default
+    'claudia' (case-insensitive) — no directive needed in either case.
+    """
+    alias = runtime_config_mod.get_therapist_alias(data_root).strip()
+    if not alias or alias.lower() == "claudia":
+        return ""
+    return (
+        f"[bot directive — session opener only: the user's preferred name for "
+        f"you in this deploy is '{alias}'. Include the exact phrase "
+        f"'you can call me {alias}' once in this opener so they see you "
+        f"remembered. Do not repeat the phrase in subsequent turns.] "
+    )
+
+
 def _seed_opener(session_id: str, model: str, blocks) -> None:
     claude = claude_mod.get_client(runtime_config_mod.get_anthropic_key(state.cfg.data_root))
     assert claude is not None, "opener invoked without an Anthropic API key"
-    synthetic_user = "Begin the session."
+    synthetic_user = _opener_alias_directive(state.cfg.data_root) + "Begin the session."
     state.store.append_message(
         session_id,
         Message(

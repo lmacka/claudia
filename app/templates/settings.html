@@ -80,6 +80,30 @@
 
 {% if claudia_mode == "adult" %}
 <section class="panel">
+  <h2>What should claudia call itself?</h2>
+  <p class="muted"><small>Default is "claudia". If you set something else here, the bot will say "you can call me {your-name}" once at the start of every new session. Doesn't change the product name anywhere else. Saved immediately.</small></p>
+  <form method="post" action="/settings/therapist-name">
+    <label for="therapist_alias" class="visually-hidden">therapist name</label>
+    <input type="text" id="therapist_alias" name="therapist_alias"
+           value="{{ therapist_alias or '' }}" placeholder="claudia" maxlength="40"
+           style="max-width: 320px;">
+    <button type="submit" class="primary">save</button>
+  </form>
+</section>
+
+<section class="panel">
+  <h2>Additional instructions to claudia</h2>
+  <p class="muted"><small>Free-form notes appended to claudia's system prompt every session — tone preferences, topics to push back on, things to avoid. Stays in effect until you clear it. Saved immediately.</small></p>
+  <form method="post" action="/settings/additional-instructions">
+    <label for="additional_instructions" class="visually-hidden">additional instructions</label>
+    <textarea id="additional_instructions" name="additional_instructions"
+              rows="6" placeholder="e.g. Don't moralise. Push back when I'm catastrophising. Skip the validation phrasing."
+              style="width: 100%; max-width: 720px;">{{ additional_instructions or '' }}</textarea>
+    <p style="margin-top: 8px;"><button type="submit" class="primary">save instructions</button></p>
+  </form>
+</section>
+
+<section class="panel">
   <h2>Gmail + Calendar tools</h2>
   <p class="muted"><small>When enabled, claudia can read your Gmail threads and your calendar, and draft emails / create events on your behalf. Requires Google OAuth to be wired in the deploy. Saved immediately. Default off.</small></p>
   <form method="post" action="/settings/google-integration">

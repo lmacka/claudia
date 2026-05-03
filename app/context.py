@@ -43,6 +43,7 @@ class ContextLoader:
         kid_parent_display_name: str = "your parent",
         kid_parent_display_name_provider=None,
         people_md_provider=None,
+        additional_instructions_provider=None,
     ) -> None:
         self.data_root = data_root
         self.prompts_dir = prompts_dir
@@ -57,6 +58,12 @@ class ContextLoader:
         # Callable[[], str] returning the rendered people roster, or None.
         # Concatenated under INDEX.md in block 2 when present.
         self._people_md_provider = people_md_provider
+        # Callable[[], str] returning the user's additional instructions
+        # (set in /setup/3 or /settings, persisted in kv_store). When
+        # non-empty, appended to the companion prompt under a clear heading
+        # so the user's overrides are scoped + visible to anyone reading
+        # the assembled prompt for debugging.
+        self._additional_instructions_provider = additional_instructions_provider
 
     @property
     def kid_parent_display_name(self) -> str:
@@ -175,6 +182,21 @@ class ContextLoader:
                 .replace("{{DISPLAY_NAME}}", self.display_name or "the kid")
                 .replace("{{PARENT_DISPLAY_NAME}}", self.kid_parent_display_name)
             )
+
+        # Append user's free-form additional instructions (v0.8 phase B).
+        # Adult-mode only; kid prompts shouldn't be user-overridable since
+        # the parent admin already controls deploy-level config.
+        if self.mode == "adult" and self._additional_instructions_provider is not None:
+            try:
+                extra = (self._additional_instructions_provider() or "").strip()
+            except Exception:  # noqa: BLE001
+                extra = ""
+            if extra:
+                companion = (
+                    companion
+                    + "\n\n## Additional instructions from the user\n\n"
+                    + extra
+                )
 
         if self.mode == "kid":
             # Kid mode: minimal context. The parent has typically just
