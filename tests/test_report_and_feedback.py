@@ -9,7 +9,23 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from app.db_audit import app_feedback_tail
+from app.storage import SessionHeader
+from app.storage_sqlite import SqliteSessionStore
 from app.summariser import AppFeedback, append_app_feedback
+
+
+def _seed_session(tmp_path: Path, session_id: str) -> None:
+    """Create a sessions row so app_feedback's FK can be satisfied."""
+    SqliteSessionStore(tmp_path).create_session(
+        SessionHeader(
+            session_id=session_id,
+            created_at="2026-05-03T00:00:00+00:00",
+            mode="vent",
+            model="claude-sonnet-4-6",
+            prompt_sha="",
+        )
+    )
 
 
 @pytest.fixture
@@ -34,34 +50,40 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
 # ---------------------------------------------------------------------------
 
 
-def test_append_app_feedback_writes_file(tmp_path: Path) -> None:
+def test_append_app_feedback_writes_rows(tmp_path: Path) -> None:
+    sid = "2026-04-25T01-00-00Z_session_aaaa"
+    _seed_session(tmp_path, sid)
     items = [
         AppFeedback(quote="this UI keeps scrolling weird", observation="auto-scroll missing on mobile"),
         AppFeedback(quote="", observation="model was too pushy on the wrap"),
     ]
-    path = append_app_feedback(tmp_path, "2026-04-25T01-00-00Z_session_aaaa", items)
-    assert path is not None and path.exists()
-    body = path.read_text(encoding="utf-8")
-    assert "session 2026-04-25T01-00-00Z_session_aaaa" in body
+    count = append_app_feedback(tmp_path, sid, items)
+    assert count == 2
+    body = app_feedback_tail(tmp_path)
+    assert f"session {sid}" in body
     assert "scrolling weird" in body
     assert "auto-scroll missing on mobile" in body
     assert "too pushy on the wrap" in body
 
 
 def test_append_app_feedback_appends_subsequent_entries(tmp_path: Path) -> None:
+    _seed_session(tmp_path, "s1")
+    _seed_session(tmp_path, "s2")
     append_app_feedback(tmp_path, "s1", [AppFeedback(quote="a", observation="b")])
     append_app_feedback(tmp_path, "s2", [AppFeedback(quote="c", observation="d")])
-    body = (tmp_path / "app-feedback.md").read_text(encoding="utf-8")
+    body = app_feedback_tail(tmp_path)
     assert "session s1" in body
     assert "session s2" in body
-    # Newer entry should appear after the older one (file is append-only).
+    # Older entry appears first (oldest-first within the rendered window).
     assert body.index("session s1") < body.index("session s2")
 
 
-def test_append_app_feedback_empty_list_no_file(tmp_path: Path) -> None:
+def test_append_app_feedback_empty_list_no_rows(tmp_path: Path) -> None:
     result = append_app_feedback(tmp_path, "s", [])
     assert result is None
-    assert not (tmp_path / "app-feedback.md").exists()
+    # No DB file is created (no migrate() call on empty input).
+    assert not (tmp_path / "claudia.db").exists()
+    assert app_feedback_tail(tmp_path) == ""
 
 
 # ---------------------------------------------------------------------------

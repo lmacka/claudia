@@ -10,7 +10,6 @@ Forced tool-use guarantees structured output — never returns text.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -466,21 +465,8 @@ def write_current_state(data_root: Path, contents: str) -> None:
     p.write_text(text, encoding="utf-8")
 
 
-def write_audit_sidecar(
-    data_root: Path,
-    session_id: str,
-    report: AuditorReport,
-) -> Path:
-    """Persist an AuditorReport as JSON next to session-logs/ for /review.
-
-    The session-log markdown is human prose; this sidecar is the structured
-    payload (people_updates, current_state_proposed, app_feedback) that the
-    memory-diff review screen renders as cards.
-    """
-    sidecars = data_root / "audit-sidecars"
-    sidecars.mkdir(parents=True, exist_ok=True)
-    path = sidecars / f"{session_id}.json"
-    payload = {
+def _report_to_dict(session_id: str, report: AuditorReport) -> dict:
+    return {
         "session_id": session_id,
         "title": report.title,
         "summary_markdown": report.summary_markdown,
@@ -506,48 +492,43 @@ def write_audit_sidecar(
         ],
         "written_at": datetime.now(UTC).isoformat(),
     }
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    tmp.replace(path)
-    return path
+
+
+def write_audit_sidecar(
+    data_root: Path,
+    session_id: str,
+    report: AuditorReport,
+) -> None:
+    """Persist an AuditorReport for /review. Writes to the audit_reports
+    table (T-NEW-I phase 2). Replaces the per-session JSON file in
+    /data/audit-sidecars/."""
+    from app.db_audit import save_audit_report
+
+    save_audit_report(data_root, session_id, _report_to_dict(session_id, report))
 
 
 def read_audit_sidecar(data_root: Path, session_id: str) -> dict | None:
-    """Load the sidecar JSON for /session/<id>/review. None if absent."""
-    p = data_root / "audit-sidecars" / f"{session_id}.json"
-    if not p.exists():
-        return None
-    try:
-        return json.loads(p.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
+    """Load the saved report for /session/<id>/review. None if no audit yet."""
+    from app.db_audit import load_audit_report
+
+    return load_audit_report(data_root, session_id)
 
 
 def append_app_feedback(
     data_root: Path,
     session_id: str,
     items: list[AppFeedback],
-) -> Path | None:
-    """Append app-feedback entries to data_root/app-feedback.md. Returns path
-    if anything was written, else None."""
+) -> int | None:
+    """Insert app-feedback rows. Returns count inserted, or None if empty input."""
     if not items:
         return None
-    p = data_root / "app-feedback.md"
-    ts = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
-    lines = [f"\n## {ts} — session {session_id}\n"]
-    for it in items:
-        q = it.quote.strip()
-        obs = it.observation.strip()
-        if q:
-            lines.append(f'- > "{q}"')
-            if obs:
-                lines.append(f"  - {obs}")
-        elif obs:
-            lines.append(f"- {obs}")
-    block = "\n".join(lines) + "\n"
-    with p.open("a", encoding="utf-8") as fh:
-        fh.write(block)
-    return p
+    from app.db_audit import append_app_feedback as _db_append
+
+    return _db_append(
+        data_root,
+        session_id,
+        [{"quote": it.quote.strip(), "observation": it.observation.strip()} for it in items],
+    )
 
 
 # Re-export for tests/usage.

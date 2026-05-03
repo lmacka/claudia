@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -38,10 +37,10 @@ def _create_session(client: TestClient) -> str:
     return loc.split("/", 2)[2]
 
 
-def _events(client: TestClient, session_id: str) -> list[tuple[str, dict]]:
+def _has_event(client: TestClient, session_id: str, event_type: str) -> bool:
     import app.main as main_module
 
-    return main_module.state.store._events.get(session_id, [])  # type: ignore[attr-defined]
+    return main_module.state.store.has_event(session_id, event_type)
 
 
 def _wait_for_event(client: TestClient, session_id: str, event: str, timeout: float = 2.0) -> None:
@@ -56,14 +55,11 @@ def _wait_for_event(client: TestClient, session_id: str, event: str, timeout: fl
 
     deadline = _time.monotonic() + timeout
     while _time.monotonic() < deadline:
-        if any(k == event for (k, _) in _events(client, session_id)):
+        if _has_event(client, session_id, event):
             return
         client.get("/healthz")
         _time.sleep(0.02)
-    raise AssertionError(
-        f"event {event!r} never appeared within {timeout}s; "
-        f"saw: {[k for (k, _) in _events(client, session_id)]}"
-    )
+    raise AssertionError(f"event {event!r} never appeared within {timeout}s")
 
 
 # ---------------------------------------------------------------------------
@@ -117,9 +113,8 @@ def test_end_schedules_audit_in_background(client: TestClient) -> None:
     sid = _create_session(client)
     client.post(f"/session/{sid}/end", follow_redirects=False)
     _wait_for_event(client, sid, "audit_applied")
-    kinds = [k for (k, _) in _events(client, sid)]
-    assert "audit_scheduled" in kinds
-    assert "audit_applied" in kinds
+    assert _has_event(client, sid, "audit_scheduled")
+    assert _has_event(client, sid, "audit_applied")
 
 
 def test_chat_view_shows_mood_panel_when_ended(client: TestClient) -> None:
@@ -141,20 +136,18 @@ def test_mood_endpoint_records_and_is_idempotent(client: TestClient) -> None:
     assert r.status_code == 200, r.text
     assert "7/10" in r.text
 
+    # Mood now lives in the SQLite mood_log table (T-NEW-I phase 2).
     import app.main as main_module
+    from app.db_audit import mood_by_session
 
-    mood_log = main_module.state.cfg.data_root / "context" / "mood-log.jsonl"
-    assert mood_log.exists()
-    lines = [line for line in mood_log.read_text().splitlines() if line.strip()]
-    assert len(lines) == 1
-    entry = json.loads(lines[0])
-    assert entry["regulation_score"] == 7
-    assert entry["session"] == sid
+    moods = mood_by_session(main_module.state.cfg.data_root)
+    assert moods.get(sid) == 7
 
+    # Idempotency: a second POST is a no-op (the route checks has_event(mood_recorded)).
     r2 = client.post(f"/session/{sid}/mood", data={"regulation_score": "3"})
     assert r2.status_code == 200
-    lines2 = [line for line in mood_log.read_text().splitlines() if line.strip()]
-    assert len(lines2) == 1
+    moods2 = mood_by_session(main_module.state.cfg.data_root)
+    assert moods2.get(sid) == 7  # still 7, second POST ignored
 
 
 def test_mood_rejects_invalid_score(client: TestClient) -> None:

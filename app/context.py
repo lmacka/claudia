@@ -150,7 +150,15 @@ class ContextLoader:
         return "\n\n".join(parts)
 
     def _app_feedback_tail(self, max_bytes: int = 2048) -> str:
-        return self._read_last(self.data_root / "app-feedback.md", max_bytes).strip()
+        # T-NEW-I: app feedback now lives in SQLite. Falls back to "" if the
+        # DB doesn't exist yet (fresh install before any session ended).
+        try:
+            from app.db_audit import app_feedback_tail
+
+            return app_feedback_tail(self.data_root, max_chars=max_bytes)
+        except Exception as e:  # noqa: BLE001
+            log.debug("app_feedback_tail.unavailable", error=str(e))
+            return ""
 
     def assemble(self, frame_tag: str = "") -> SystemPromptBlocks:
         # Block 1 — stable, cached. Mode picks which companion prompt loads

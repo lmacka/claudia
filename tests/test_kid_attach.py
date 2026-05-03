@@ -130,9 +130,7 @@ def test_kid_attach_records_event(kid_client: TestClient) -> None:
     r = kid_client.post(f"/session/{sid}/kid-attach", files=files, data={"content": ""})
     assert r.status_code == 200
 
-    events = main_module.state.store._events.get(sid, [])  # type: ignore[attr-defined]
-    kinds = [e[0] if isinstance(e, tuple) else e.get("event_type") for e in events]
-    assert "kid_attach" in kinds
+    assert main_module.state.store.has_event(sid, "kid_attach")
 
 
 # ---------------------------------------------------------------------------

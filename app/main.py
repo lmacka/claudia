@@ -58,7 +58,6 @@ from app.library import Library
 from app.library_stream import StatusBus
 from app.people import People
 from app.storage import (
-    InMemorySessionStore,
     Message,
     SessionHeader,
     SessionStore,
@@ -291,12 +290,10 @@ async def lifespan(app: FastAPI):
     for sub in ("sessions", "session-logs", "uploads", "context", "session-exports", "library", "people", ".locks"):
         (cfg.data_root / sub).mkdir(parents=True, exist_ok=True)
 
-    # Storage selection (T-NEW-I phase 1):
-    # - local mode: InMemorySessionStore (tests + uvicorn-on-laptop)
-    # - dev/prod:   SqliteSessionStore (replaces NFSSessionStore JSONL — clean
-    #               rebuild, no JSONL import. Existing JSONL files on disk are
-    #               left untouched but no longer read by the app.)
-    state.store = InMemorySessionStore() if cfg.is_local else SqliteSessionStore(cfg.data_root)
+    # Storage (T-NEW-I): SqliteSessionStore in every mode. Tests get a fresh
+    # /data/claudia.db under tmp_path so there's no global-state contamination.
+    # Existing JSONL files on prod are left untouched but no longer read.
+    state.store = SqliteSessionStore(cfg.data_root)
     # ContextLoader's people_md_provider is wired below once state.people is
     # constructed; until then it returns "".
     state.loader = ContextLoader(
@@ -1001,44 +998,17 @@ def _brisbane_label(iso_ts: str) -> str:
 
 def _mood_by_session(data_root: Path) -> dict[str, int]:
     """Map session_id -> last regulation_score recorded for that session."""
-    p = data_root / "context" / "mood-log.jsonl"
-    out: dict[str, int] = {}
-    if not p.exists():
-        return out
-    try:
-        for line in p.read_text(encoding="utf-8").splitlines():
-            try:
-                rec = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            sid = rec.get("session")
-            score = rec.get("regulation_score")
-            if isinstance(sid, str) and isinstance(score, int):
-                out[sid] = score
-    except OSError:
-        pass
-    return out
+    from app.db_audit import mood_by_session
+
+    return mood_by_session(data_root)
 
 
 def _mood_sparkline(data_root: Path) -> str | None:
-    p = data_root / "context" / "mood-log.jsonl"
-    if not p.exists():
-        return None
-    scores: list[int] = []
-    try:
-        for line in p.read_text(encoding="utf-8").splitlines():
-            try:
-                r = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            s = r.get("regulation_score")
-            if isinstance(s, int) and 1 <= s <= 10:
-                scores.append(s)
-    except OSError:
-        return None
+    from app.db_audit import recent_mood_scores
+
+    scores = recent_mood_scores(data_root, limit=20)
     if not scores:
         return None
-    scores = scores[-20:]
     glyphs = "▁▂▃▄▅▆▇█"
     return "".join(glyphs[min(7, max(0, (s - 1) * 7 // 9))] for s in scores) + f"  ({scores[-1]}/10)"
 
@@ -1423,15 +1393,9 @@ async def session_mood(
 
 
 def _append_mood(data_root: Path, session_id: str, regulation_score: int, ts: str | None = None) -> None:
-    p = data_root / "context" / "mood-log.jsonl"
-    p.parent.mkdir(parents=True, exist_ok=True)
-    entry = {
-        "ts": ts or datetime.now(UTC).isoformat(),
-        "session": session_id,
-        "regulation_score": regulation_score,
-    }
-    with p.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(entry) + "\n")
+    from app.db_audit import record_mood
+
+    record_mood(data_root, session_id, regulation_score, ts=ts)
 
 
 # ---------------------------------------------------------------------------

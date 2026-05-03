@@ -60,6 +60,37 @@ CREATE TABLE IF NOT EXISTS _schema_version (
 );
 """
 
+# Phase 2: audit sidecars + mood log + app feedback. Replaces the file-based
+# stores (audit-sidecars/{id}.json, context/mood-log.jsonl, app-feedback.md).
+SCHEMA_V2 = """
+CREATE TABLE IF NOT EXISTS audit_reports (
+    session_id TEXT PRIMARY KEY,
+    written_at TEXT NOT NULL,
+    report_json TEXT NOT NULL,
+    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS mood_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    ts TEXT NOT NULL,
+    regulation_score INTEGER NOT NULL CHECK (regulation_score BETWEEN 1 AND 10),
+    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS mood_log_session_idx ON mood_log(session_id);
+CREATE INDEX IF NOT EXISTS mood_log_ts_idx ON mood_log(ts DESC);
+
+CREATE TABLE IF NOT EXISTS app_feedback (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    quote TEXT NOT NULL,
+    observation TEXT NOT NULL,
+    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS app_feedback_ts_idx ON app_feedback(ts DESC);
+"""
+
 
 # ---------------------------------------------------------------------------
 # Connection
@@ -100,7 +131,14 @@ def transaction(db: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
 # Migrations
 # ---------------------------------------------------------------------------
 
-CURRENT_VERSION = 1
+CURRENT_VERSION = 2
+
+# Forward-only migrations keyed by version number. Each runs only when the
+# current DB version is below the key.
+_MIGRATIONS = {
+    1: SCHEMA_V1,
+    2: SCHEMA_V2,
+}
 
 
 def _current_version(db: sqlite3.Connection) -> int:
@@ -113,18 +151,19 @@ def _current_version(db: sqlite3.Connection) -> int:
 
 
 def migrate(data_root: Path) -> None:
-    """Idempotent schema migration. Runs at every boot."""
+    """Idempotent forward-only schema migration. Runs at every boot."""
     data_root.mkdir(parents=True, exist_ok=True)
     with connect(data_root) as db:
         version = _current_version(db)
         if version >= CURRENT_VERSION:
             log.debug("db.migrate.up_to_date", version=version)
             return
-        log.info("db.migrate.applying", from_version=version, to_version=CURRENT_VERSION)
-        with transaction(db):
-            db.executescript(SCHEMA_V1)
-            db.execute(
-                "INSERT INTO _schema_version (version) VALUES (?)",
-                (CURRENT_VERSION,),
-            )
+        for v in sorted(_MIGRATIONS):
+            if v <= version:
+                continue
+            log.info("db.migrate.applying", from_version=version, to_version=v)
+            with transaction(db):
+                db.executescript(_MIGRATIONS[v])
+                db.execute("INSERT INTO _schema_version (version) VALUES (?)", (v,))
+            version = v
         log.info("db.migrate.done", version=CURRENT_VERSION)
