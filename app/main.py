@@ -626,10 +626,12 @@ async def login_page(request: Request) -> HTMLResponse:
     if existing is not None:
         return RedirectResponse(url="/", status_code=303)
 
-    is_first_time = not auth_mod.is_passphrase_set(cfg.data_root, role=role)
-    # Adult mode first-time: send to /setup/1 (the wizard captures the
-    # password); they shouldn't be at /login at all.
-    if role == "adult" and is_first_time:
+    password_set = auth_mod.is_passphrase_set(cfg.data_root, role=role)
+    # Adult mode: only bounce to /setup if setup itself isn't complete.
+    # Setup-complete-but-no-password is a valid state when the user authed
+    # via Google during the wizard; in that case render /login with the
+    # Google button as the only option.
+    if role == "adult" and not password_set and not _setup_complete():
         return RedirectResponse(url="/setup", status_code=303)
 
     # Show "Sign in with Google" option only when:
@@ -646,7 +648,8 @@ async def login_page(request: Request) -> HTMLResponse:
         "login.html",
         {
             "role": role,
-            "is_first_time": is_first_time,
+            "is_first_time": not password_set,
+            "password_set": password_set,
             "display_name": cfg.display_name,
             "google_identity_email": google_identity_email,
         },
@@ -703,9 +706,27 @@ async def login_submit(request: Request) -> Response:
             )
 
     if is_first_time and role == "adult":
-        # Adult mode shouldn't reach /login first-time — the wizard handles
-        # passphrase capture. Bounce there.
-        return RedirectResponse(url="/setup", status_code=303)
+        # Adult mode with no password set: either setup is incomplete (bounce
+        # to wizard) or the user authed via Google during setup and never
+        # picked a password (refuse password attempt; they must use Google).
+        if not _setup_complete():
+            return RedirectResponse(url="/setup", status_code=303)
+        google_identity_email: str | None = None
+        if _google_creds_present(cfg):
+            google_identity_email = _google_identity_bound_email(cfg)
+        return state.templates.TemplateResponse(
+            request,
+            "login.html",
+            {
+                "role": role,
+                "is_first_time": True,
+                "password_set": False,
+                "display_name": cfg.display_name,
+                "google_identity_email": google_identity_email,
+                "error": "No password set on this deploy — sign in with Google.",
+            },
+            status_code=401,
+        )
 
     if not auth_mod.verify_passphrase(cfg.data_root, passphrase, role=role):
         state.rate_limiter.record(ip)

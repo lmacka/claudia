@@ -19,11 +19,15 @@
       <li><strong>If something's really bad, I'll point you to <a href="/help">people who can help</a></strong> and I'll stay with you while you figure it out.</li>
     </ul>
   </div>
+{% elif role == "adult" and password_set is defined and not password_set and google_identity_email %}
+  <h1>welcome back</h1>
+  <p class="muted">this deploy uses Google sign-in</p>
 {% else %}
   <h1>{% if role == "adult" %}welcome back{% else %}welcome back, {{ display_name or "you" }}{% endif %}</h1>
   <p class="muted">enter your password to continue</p>
 {% endif %}
 
+{% if not (role == "adult" and password_set is defined and not password_set and google_identity_email) %}
 <form method="post" action="/login">
   <fieldset>
     <label for="passphrase">{% if is_first_time %}pick a password{% else %}password{% endif %}</label>
@@ -41,11 +45,12 @@
     </button>
   </fieldset>
 </form>
+{% endif %}
 
-{% if role == "adult" and not is_first_time and google_identity_email %}
-<p class="muted" style="text-align: center; margin: 16px 0;">— or —</p>
+{% if role == "adult" and google_identity_email %}
+{% if password_set is defined and password_set %}<p class="muted" style="text-align: center; margin: 16px 0;">— or —</p>{% endif %}
 <form method="post" action="/auth/google/start" style="text-align: center;">
-  <button type="submit" class="outline">Sign in with Google ({{ google_identity_email }})</button>
+  <button type="submit" class="primary">Sign in with Google ({{ google_identity_email }})</button>
 </form>
 <small class="muted" style="display: block; text-align: center; margin-top: 4px;">
   This deploy is bound to {{ google_identity_email }}.
