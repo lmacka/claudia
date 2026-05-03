@@ -131,13 +131,65 @@ def transaction(db: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
 # Migrations
 # ---------------------------------------------------------------------------
 
-CURRENT_VERSION = 2
+SCHEMA_V3 = """
+-- Phase 3: library + people manifests. Per-entity meta.json files become
+-- rows; raw bytes / extracted text / notes stay on the filesystem under
+-- /data/library/{id}/ and /data/people/{id}/ respectively.
+CREATE TABLE IF NOT EXISTS library_docs (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    source TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    original_date TEXT,
+    original_date_source TEXT,
+    date_range_end TEXT,
+    size_bytes INTEGER NOT NULL DEFAULT 0,
+    mime TEXT NOT NULL DEFAULT '',
+    page_count INTEGER,
+    extractor TEXT NOT NULL DEFAULT '',
+    extracted_chars INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'active',
+    supersedes TEXT,
+    superseded_by TEXT,
+    verification TEXT NOT NULL DEFAULT 'ok',
+    verification_json TEXT,
+    meta_json TEXT NOT NULL  -- full LibraryDocMeta payload for forward-compat
+);
+CREATE INDEX IF NOT EXISTS library_docs_status_idx ON library_docs(status);
+CREATE INDEX IF NOT EXISTS library_docs_created_idx ON library_docs(created_at DESC);
+CREATE INDEX IF NOT EXISTS library_docs_kind_idx ON library_docs(kind);
+
+CREATE TABLE IF NOT EXISTS people (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    category TEXT NOT NULL DEFAULT 'other',
+    status TEXT NOT NULL DEFAULT 'active',
+    last_mentioned TEXT,
+    meta_json TEXT NOT NULL  -- full PersonMeta payload
+);
+CREATE INDEX IF NOT EXISTS people_status_idx ON people(status);
+CREATE INDEX IF NOT EXISTS people_name_lower_idx ON people(LOWER(name));
+"""
+
+# Phase 4: kv_store for singleton override files.
+SCHEMA_V4 = """
+CREATE TABLE IF NOT EXISTS kv_store (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+"""
+
+CURRENT_VERSION = 4
 
 # Forward-only migrations keyed by version number. Each runs only when the
 # current DB version is below the key.
 _MIGRATIONS = {
     1: SCHEMA_V1,
     2: SCHEMA_V2,
+    3: SCHEMA_V3,
+    4: SCHEMA_V4,
 }
 
 

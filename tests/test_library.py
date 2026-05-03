@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime
 
 import pytest
@@ -113,7 +112,8 @@ def test_meta_strips_title_whitespace():
 # ---------------------------------------------------------------------------
 
 
-def test_create_doc_writes_all_sidecars(tmp_path):
+def test_create_doc_writes_blobs_and_persists_meta(tmp_path):
+    """Blobs (original + extracted) on disk; meta + verification in SQLite."""
     lib = Library(tmp_path / "library")
     doc_id = lib.mint_doc_id("Spec test")
     meta = _meta(id=doc_id, size_bytes=11, extracted_chars=11)
@@ -121,11 +121,12 @@ def test_create_doc_writes_all_sidecars(tmp_path):
     lib.create_doc(meta, b"hello world", "txt", "hello world", {"status": "ok"})
 
     doc_dir = lib.root / doc_id
-    assert (doc_dir / "meta.json").exists()
+    # Blobs on disk
     assert (doc_dir / "original.txt").exists()
     assert (doc_dir / "extracted.md").exists()
-    assert (doc_dir / "verification.json").exists()
-    assert (lib.root / "manifest.json").exists()
+    # Meta + verification in DB
+    assert lib.get(doc_id) is not None
+    assert lib.get_verification(doc_id) == {"status": "ok"}
 
 
 def test_create_doc_rejects_size_mismatch(tmp_path):
@@ -170,34 +171,31 @@ def test_doc_dir_rejects_path_traversal(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_rebuild_manifest_lists_all_docs(tmp_path):
+def test_list_all_returns_every_doc(tmp_path):
     lib = Library(tmp_path / "library")
     for title in ["A", "B", "C"]:
         doc_id = lib.mint_doc_id(title)
         meta = _meta(id=doc_id, title=title, size_bytes=1, extracted_chars=1)
         lib.create_doc(meta, b"x", "txt", "x", {})
-    manifest = json.loads((lib.root / "manifest.json").read_text())
-    assert manifest["count"] == 3
-    titles = {entry["title"] for entry in manifest["entries"]}
+    docs = lib.list_all()
+    titles = {d.title for d in docs}
     assert titles == {"A", "B", "C"}
 
 
-def test_rebuild_manifest_atomic(tmp_path):
-    """Manifest never appears in a half-written state — temp + rename."""
+def test_create_doc_is_atomic_in_db(tmp_path):
+    """SQLite UPSERT is atomic — a doc is either fully present or absent."""
     lib = Library(tmp_path / "library")
     doc_id = lib.mint_doc_id("X")
     meta = _meta(id=doc_id, size_bytes=1, extracted_chars=1)
     lib.create_doc(meta, b"x", "txt", "x", {})
-    manifest = lib.root / "manifest.json"
-    # Verify it's valid JSON and the temp file is gone.
-    assert json.loads(manifest.read_text())["count"] == 1
-    assert not (lib.root / "manifest.json.tmp").exists()
+    assert lib.get(doc_id) is not None
 
 
-def test_manifest_skips_lock_dir_and_dotfiles(tmp_path):
+def test_list_all_empty_for_fresh_library(tmp_path):
     lib = Library(tmp_path / "library")
-    # mint_doc_id creates the .locks dir as a side effect; verify list_all skips it.
-    lib.mint_doc_id("X")  # touches .locks
+    # mint_doc_id creates the .locks dir as a side effect; list_all reads
+    # from the DB which is empty.
+    lib.mint_doc_id("X")  # touches .locks but no row inserted
     docs = lib.list_all()
     assert docs == []
 
@@ -269,17 +267,18 @@ def test_restore_rejects_non_deleted(tmp_path):
         lib.restore(doc_id)  # still active
 
 
-def test_hard_delete_removes_folder_and_manifest_entry(tmp_path):
+def test_hard_delete_removes_blobs_and_db_row(tmp_path):
     lib = Library(tmp_path / "library")
     doc_id = lib.mint_doc_id("X")
     meta = _meta(id=doc_id, size_bytes=1, extracted_chars=1)
     lib.create_doc(meta, b"x", "txt", "x", {})
     assert (lib.root / doc_id).exists()
+    assert lib.get(doc_id) is not None
 
     lib.hard_delete(doc_id)
     assert not (lib.root / doc_id).exists()
-    manifest = json.loads((lib.root / "manifest.json").read_text())
-    assert manifest["count"] == 0
+    assert lib.get(doc_id) is None
+    assert lib.list_all() == []
 
 
 def test_update_meta_partial(tmp_path):
@@ -388,10 +387,21 @@ def test_render_index_md_excludes_archived(tmp_path):
 
 
 def test_corrupt_meta_does_not_crash_list_all(tmp_path):
+    """Corrupt meta_json in a library_docs row is skipped gracefully."""
     lib = Library(tmp_path / "library")
-    bad_dir = lib.root / "bad-doc"
-    bad_dir.mkdir()
-    (bad_dir / "meta.json").write_text("{not json", encoding="utf-8")
-    # Should not raise, just skip the bad doc.
+    # Create a real doc, then corrupt its meta_json column.
+    doc_id = lib.mint_doc_id("Good")
+    meta = _meta(id=doc_id, size_bytes=1, extracted_chars=1)
+    lib.create_doc(meta, b"x", "txt", "x", {})
+    from app.db import connect, transaction
+
+    with connect(lib._data_root) as db, transaction(db):
+        db.execute(
+            "INSERT INTO library_docs (id, title, kind, source, created_at, meta_json) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("bad-doc", "Bad", "text", "paste", "2026-05-03", "{not json"),
+        )
+    # Should not raise; bad row is skipped.
     docs = lib.list_all()
-    assert docs == []
+    assert len(docs) == 1
+    assert docs[0].id == doc_id

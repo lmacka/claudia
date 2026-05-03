@@ -1,18 +1,14 @@
 """
 Unified library for ingested documents (PDFs, DOCXs, pastes, screenshots,
-chat exports). One folder per document under /data/library/, with a sidecar
-meta.json, the verbatim original, the pre-extracted markdown, and a
-verification.json. A manifest.json at the root is the machine-readable index.
+chat exports). T-NEW-I phase 3: metadata moves to the SQLite library_docs
+table; raw original bytes + extracted text + verification still live on the
+filesystem under /data/library/<doc_id>/ as blobs.
 
 Per docs/library-people-plan.md.
 
-Library is the data layer only. Extraction (turning original bytes into
-extracted markdown) lives in app/extractors.py. The /library route handlers
-in app/main.py orchestrate the two.
-
-All file IO is synchronous (mirrors app/storage.py). Mutations take an
-fcntl exclusive lock on /data/library/.locks/<resource>.lock to serialise
-concurrent uploads. Manifest writes are atomic via temp + rename.
+The public API of this class is preserved verbatim — call sites (the
+/library route handlers in app/main.py, the read_document/list_documents/
+search_documents tools, library_pipeline) don't change.
 """
 
 from __future__ import annotations
@@ -31,6 +27,8 @@ from typing import Any, Literal
 
 import structlog
 from pydantic import BaseModel, Field, field_validator
+
+from app.db import connect, migrate, transaction
 
 log = structlog.get_logger()
 
@@ -51,7 +49,9 @@ DateSource = Literal[
 
 
 class LibraryDocMeta(BaseModel):
-    """The meta.json schema. One per document."""
+    """Schema for one document's metadata. Stored as a row in library_docs
+    (with the full payload JSON-serialised in meta_json for forward-compat
+    when fields are added)."""
 
     id: str
     title: str
@@ -113,23 +113,22 @@ def _utc_stamp() -> str:
 
 
 class Library:
-    """
-    Owns every read/write under /data/library/.
+    """SQLite-backed library (T-NEW-I phase 3).
 
-    Methods are synchronous. Mutations serialise on per-resource fcntl locks.
-    Manifest writes are atomic (temp + rename).
+    Metadata lives in the library_docs table; raw bytes / extracted text /
+    verification still live on the filesystem under <root>/<doc_id>/ as blobs.
+    The public API matches the previous file-based implementation so call
+    sites don't have to change.
 
-    Layout:
+    Layout on disk (blobs only):
       <root>/
-        manifest.json
-        .locks/
-          manifest.lock
-          <doc_id>.lock
         <doc_id>/
-          meta.json
-          original.<ext>
-          extracted.md
-          verification.json
+          original.<ext>    # raw bytes
+          extracted.md      # extracted text
+        .locks/             # for blob writes only
+
+    The DB lives at <data_root>/claudia.db (parent of <root>). __init__
+    derives data_root from `root.parent` to call migrate().
     """
 
     def __init__(self, root: Path) -> None:
@@ -137,6 +136,9 @@ class Library:
         self.locks_dir = root / ".locks"
         self.root.mkdir(parents=True, exist_ok=True)
         self.locks_dir.mkdir(parents=True, exist_ok=True)
+        # The DB lives in the data root (parent of the library folder).
+        self._data_root = root.parent
+        migrate(self._data_root)
 
     # --- lock helper --------------------------------------------------------
 
@@ -151,10 +153,9 @@ class Library:
             fcntl.flock(fd, fcntl.LOCK_UN)
             os.close(fd)
 
-    # --- path helpers -------------------------------------------------------
+    # --- path helpers (for blobs only — meta lives in DB) -------------------
 
     def _doc_dir(self, doc_id: str) -> Path:
-        # Defence-in-depth: validate the id even though pydantic does.
         if "/" in doc_id or ".." in doc_id or doc_id.startswith("."):
             raise ValueError(f"unsafe doc id: {doc_id!r}")
         candidate = (self.root / doc_id).resolve()
@@ -164,9 +165,6 @@ class Library:
             raise ValueError(f"doc id escapes library root: {doc_id!r}") from e
         return candidate
 
-    def _meta_path(self, doc_id: str) -> Path:
-        return self._doc_dir(doc_id) / "meta.json"
-
     def _original_path(self, doc_id: str, ext: str) -> Path:
         ext = ext.lstrip(".")
         return self._doc_dir(doc_id) / f"original.{ext}"
@@ -174,32 +172,99 @@ class Library:
     def _extracted_path(self, doc_id: str) -> Path:
         return self._doc_dir(doc_id) / "extracted.md"
 
-    def _verification_path(self, doc_id: str) -> Path:
-        return self._doc_dir(doc_id) / "verification.json"
+    # --- DB helpers ---------------------------------------------------------
 
-    def _manifest_path(self) -> Path:
-        return self.root / "manifest.json"
+    def _row_to_meta(self, row) -> LibraryDocMeta | None:
+        try:
+            data = json.loads(row["meta_json"])
+            return LibraryDocMeta.model_validate(data)
+        except (json.JSONDecodeError, ValueError) as e:
+            log.error("library.meta_parse_failed", doc_id=row["id"], error=str(e))
+            return None
+
+    def _read_meta(self, doc_id: str) -> LibraryDocMeta | None:
+        with connect(self._data_root) as db:
+            row = db.execute(
+                "SELECT * FROM library_docs WHERE id = ?", (doc_id,)
+            ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_meta(row)
+
+    def _write_meta(self, doc_id: str, meta: LibraryDocMeta) -> None:
+        payload = meta.model_dump(mode="json")
+        meta_json = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        with connect(self._data_root) as db, transaction(db):
+            db.execute(
+                """INSERT INTO library_docs (
+                    id, title, kind, source, created_at, original_date,
+                    original_date_source, date_range_end, size_bytes, mime,
+                    page_count, extractor, extracted_chars, status, supersedes,
+                    superseded_by, verification, meta_json
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET
+                    title=excluded.title,
+                    kind=excluded.kind,
+                    source=excluded.source,
+                    created_at=excluded.created_at,
+                    original_date=excluded.original_date,
+                    original_date_source=excluded.original_date_source,
+                    date_range_end=excluded.date_range_end,
+                    size_bytes=excluded.size_bytes,
+                    mime=excluded.mime,
+                    page_count=excluded.page_count,
+                    extractor=excluded.extractor,
+                    extracted_chars=excluded.extracted_chars,
+                    status=excluded.status,
+                    supersedes=excluded.supersedes,
+                    superseded_by=excluded.superseded_by,
+                    verification=excluded.verification,
+                    meta_json=excluded.meta_json""",
+                (
+                    meta.id,
+                    meta.title,
+                    meta.kind,
+                    meta.source,
+                    meta.created_at.isoformat(),
+                    meta.original_date.isoformat() if meta.original_date else None,
+                    meta.original_date_source,
+                    meta.date_range_end.isoformat() if meta.date_range_end else None,
+                    meta.size_bytes,
+                    meta.mime,
+                    meta.page_count,
+                    meta.extractor,
+                    meta.extracted_chars,
+                    meta.status,
+                    meta.supersedes,
+                    meta.superseded_by,
+                    meta.verification,
+                    meta_json,
+                ),
+            )
 
     # --- id minting ---------------------------------------------------------
 
     def mint_doc_id(self, title: str) -> str:
-        """
-        Returns a unique, sortable, filesystem-safe doc id derived from the
-        title and current UTC timestamp. Collisions get a numeric suffix.
-        """
+        """Returns a unique, sortable, filesystem-safe doc id derived from
+        the title and current UTC timestamp. Collisions are resolved by
+        checking both the DB and the on-disk doc directory."""
         base = f"{_utc_stamp()}_{_slugify(title)}"
-        with self._lock("manifest"):
-            candidate = base
-            n = 2
-            while (self.root / candidate).exists():
+        candidate = base
+        n = 2
+        with self._lock("manifest"), connect(self._data_root) as db:
+            while True:
+                exists_in_db = db.execute(
+                    "SELECT 1 FROM library_docs WHERE id = ?", (candidate,)
+                ).fetchone()
+                exists_on_disk = (self.root / candidate).exists()
+                if not exists_in_db and not exists_on_disk:
+                    return candidate
                 candidate = f"{base}-{n}"
                 n += 1
-            return candidate
 
-    # --- atomic write helper ------------------------------------------------
+    # --- atomic write helper for blobs --------------------------------------
 
     def _atomic_write(self, path: Path, content: bytes | str) -> None:
-        """Write to a sibling .tmp then rename. Caller holds the lock."""
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(path.suffix + ".tmp")
         if isinstance(content, str):
@@ -207,24 +272,6 @@ class Library:
         else:
             tmp.write_bytes(content)
         os.replace(tmp, path)
-
-    def _write_meta(self, doc_id: str, meta: LibraryDocMeta) -> None:
-        payload = meta.model_dump(mode="json")
-        self._atomic_write(
-            self._meta_path(doc_id),
-            json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True),
-        )
-
-    def _read_meta(self, doc_id: str) -> LibraryDocMeta | None:
-        path = self._meta_path(doc_id)
-        if not path.exists():
-            return None
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            return LibraryDocMeta.model_validate(data)
-        except (OSError, json.JSONDecodeError, ValueError) as e:
-            log.error("library.meta_read_failed", doc_id=doc_id, error=str(e))
-            return None
 
     # --- public CRUD --------------------------------------------------------
 
@@ -236,13 +283,6 @@ class Library:
         extracted_md: str,
         verification: dict[str, Any],
     ) -> str:
-        """
-        Atomically create a new document folder and update the manifest.
-
-        Caller has already minted `meta.id` via `mint_doc_id` (or constructs
-        one consistently). All four sidecar files are written before manifest
-        regen so partial states don't appear in the manifest.
-        """
         if meta.size_bytes != len(original_bytes):
             raise ValueError(
                 f"meta.size_bytes ({meta.size_bytes}) != len(original_bytes) ({len(original_bytes)})"
@@ -253,19 +293,56 @@ class Library:
             )
 
         with self._lock(f"doc-{meta.id}"):
+            # Row uniqueness check + blob folder creation
+            with connect(self._data_root) as db:
+                existing = db.execute(
+                    "SELECT 1 FROM library_docs WHERE id = ?", (meta.id,)
+                ).fetchone()
+            if existing is not None:
+                raise FileExistsError(f"doc {meta.id} already exists")
             doc_dir = self._doc_dir(meta.id)
             if doc_dir.exists():
-                raise FileExistsError(f"doc {meta.id} already exists")
+                # Stale blob folder from a prior failed write — clean it up
+                # so create_doc is idempotent against partial state.
+                shutil.rmtree(doc_dir)
             doc_dir.mkdir(parents=True, exist_ok=False)
             self._atomic_write(self._original_path(meta.id, original_ext), original_bytes)
             self._atomic_write(self._extracted_path(meta.id), extracted_md)
-            self._atomic_write(
-                self._verification_path(meta.id),
-                json.dumps(verification, indent=2, sort_keys=True),
-            )
-            self._write_meta(meta.id, meta)
+            # Verification stored in the DB column (small JSON).
+            verification_json = json.dumps(verification, sort_keys=True)
+            payload = meta.model_dump(mode="json")
+            meta_json = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+            with connect(self._data_root) as db, transaction(db):
+                db.execute(
+                    """INSERT INTO library_docs (
+                        id, title, kind, source, created_at, original_date,
+                        original_date_source, date_range_end, size_bytes, mime,
+                        page_count, extractor, extracted_chars, status, supersedes,
+                        superseded_by, verification, verification_json, meta_json
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        meta.id,
+                        meta.title,
+                        meta.kind,
+                        meta.source,
+                        meta.created_at.isoformat(),
+                        meta.original_date.isoformat() if meta.original_date else None,
+                        meta.original_date_source,
+                        meta.date_range_end.isoformat() if meta.date_range_end else None,
+                        meta.size_bytes,
+                        meta.mime,
+                        meta.page_count,
+                        meta.extractor,
+                        meta.extracted_chars,
+                        meta.status,
+                        meta.supersedes,
+                        meta.superseded_by,
+                        meta.verification,
+                        verification_json,
+                        meta_json,
+                    ),
+                )
 
-        self.rebuild_manifest()
         log.info(
             "library.doc_created",
             doc_id=meta.id,
@@ -286,12 +363,15 @@ class Library:
         return path.read_text(encoding="utf-8")
 
     def get_verification(self, doc_id: str) -> dict[str, Any] | None:
-        path = self._verification_path(doc_id)
-        if not path.exists():
+        with connect(self._data_root) as db:
+            row = db.execute(
+                "SELECT verification_json FROM library_docs WHERE id = ?", (doc_id,)
+            ).fetchone()
+        if row is None or row["verification_json"] is None:
             return None
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+            return json.loads(row["verification_json"])
+        except json.JSONDecodeError:
             return None
 
     def get_original_path(self, doc_id: str) -> Path | None:
@@ -306,16 +386,15 @@ class Library:
 
     def list_all(self) -> list[LibraryDocMeta]:
         """Every document, regardless of status. Sorted by created_at desc."""
+        with connect(self._data_root) as db:
+            rows = db.execute(
+                "SELECT * FROM library_docs ORDER BY created_at DESC"
+            ).fetchall()
         results: list[LibraryDocMeta] = []
-        if not self.root.exists():
-            return results
-        for entry in self.root.iterdir():
-            if not entry.is_dir() or entry.name.startswith("."):
-                continue
-            meta = self._read_meta(entry.name)
+        for row in rows:
+            meta = self._row_to_meta(row)
             if meta is not None:
                 results.append(meta)
-        results.sort(key=lambda m: m.created_at, reverse=True)
         return results
 
     def list_active(self) -> list[LibraryDocMeta]:
@@ -332,15 +411,9 @@ class Library:
                 raise KeyError(f"doc {doc_id} not found")
             patched = current.model_copy(update=fields)
             self._write_meta(doc_id, patched)
-        self.rebuild_manifest()
         return patched
 
     def supersede(self, old_id: str, new_meta: LibraryDocMeta) -> None:
-        """
-        Mark old as superseded, new as active. The new doc folder must
-        already exist (caller created it via create_doc with a `supersedes`
-        pointer set on its meta).
-        """
         if new_meta.supersedes != old_id:
             raise ValueError(
                 f"new doc.supersedes ({new_meta.supersedes!r}) does not match old_id ({old_id!r})"
@@ -351,7 +424,6 @@ class Library:
                 raise KeyError(f"doc {old_id} not found")
             patched = old.model_copy(update={"status": "superseded", "superseded_by": new_meta.id})
             self._write_meta(old_id, patched)
-        self.rebuild_manifest()
         log.info("library.doc_superseded", old=old_id, new=new_meta.id)
 
     def soft_delete(self, doc_id: str) -> None:
@@ -361,7 +433,6 @@ class Library:
                 raise KeyError(f"doc {doc_id} not found")
             patched = meta.model_copy(update={"status": "deleted"})
             self._write_meta(doc_id, patched)
-        self.rebuild_manifest()
         log.info("library.doc_soft_deleted", doc_id=doc_id)
 
     def restore(self, doc_id: str) -> None:
@@ -373,43 +444,34 @@ class Library:
                 raise ValueError(f"doc {doc_id} is not in deleted state")
             patched = meta.model_copy(update={"status": "active"})
             self._write_meta(doc_id, patched)
-        self.rebuild_manifest()
         log.info("library.doc_restored", doc_id=doc_id)
 
     def hard_delete(self, doc_id: str) -> None:
         with self._lock(f"doc-{doc_id}"):
+            with connect(self._data_root) as db, transaction(db):
+                cur = db.execute("DELETE FROM library_docs WHERE id = ?", (doc_id,))
+                if cur.rowcount == 0:
+                    raise KeyError(f"doc {doc_id} not found")
             doc_dir = self._doc_dir(doc_id)
-            if not doc_dir.exists():
-                raise KeyError(f"doc {doc_id} not found")
-            shutil.rmtree(doc_dir)
-        self.rebuild_manifest()
+            if doc_dir.exists():
+                shutil.rmtree(doc_dir)
         log.info("library.doc_hard_deleted", doc_id=doc_id)
 
-    # --- manifest -----------------------------------------------------------
+    # --- manifest (no-op back-compat) --------------------------------------
 
     def rebuild_manifest(self) -> None:
-        """Regenerate /data/library/manifest.json from on-disk meta.json files."""
-        with self._lock("manifest"):
-            entries = [m.model_dump(mode="json") for m in self.list_all()]
-            payload = {
-                "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
-                "count": len(entries),
-                "entries": entries,
-            }
-            self._atomic_write(
-                self._manifest_path(),
-                json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=False),
-            )
+        """No-op since v0.7.0 — the DB is the manifest. Kept as a stub so
+        legacy callers (and tests) don't break. A concurrent reader would
+        previously have read the manifest.json snapshot; SQLite reads see the
+        latest state directly."""
+        return
 
     # --- INDEX.md rendering -------------------------------------------------
 
     def render_index_md(self) -> str:
-        """
-        Markdown rendering of the active manifest, intended to feed the
-        companion's system-prompt block 2 (replacing the legacy INDEX.md
-        that scanned uploads/).
-        """
-        active = [m for m in self.list_all() if m.status == "active"]
+        """Markdown rendering of the active manifest, intended to feed the
+        companion's system-prompt block 2."""
+        active = self.list_active()
         if not active:
             return "# INDEX.md\n\n(library is empty — no documents yet)"
         lines = ["# INDEX.md", ""]

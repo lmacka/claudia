@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -82,14 +81,18 @@ def test_person_meta_rejects_unknown_category():
 # ---------------------------------------------------------------------------
 
 
-def test_add_creates_dir_and_files(tmp_path: Path):
+def test_add_persists_meta_and_notes(tmp_path: Path):
     p = People(tmp_path / "people")
     pid = p.add(name="Rhiannon O'Hara", category="co-parent", relationship="ex")
 
     assert pid == "rhiannon-o-hara"
-    assert (p.root / pid / "meta.json").exists()
+    # Notes blob on disk
     assert (p.root / pid / "notes.md").exists()
-    assert (p.root / "manifest.json").exists()
+    # Meta in DB
+    meta = p.get(pid)
+    assert meta is not None
+    assert meta.name == "Rhiannon O'Hara"
+    assert meta.category == "co-parent"
 
 
 def test_add_with_collision_appends_suffix(tmp_path: Path):
@@ -295,14 +298,13 @@ def test_search_excludes_archived(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 
-def test_rebuild_manifest_lists_all(tmp_path: Path):
+def test_list_all_returns_every_person(tmp_path: Path):
     p = People(tmp_path / "people")
     p.add(name="A")
     p.add(name="B")
-    manifest = json.loads((p.root / "manifest.json").read_text())
-    assert manifest["count"] == 2
-    names = [e["name"] for e in manifest["entries"]]
-    assert set(names) == {"A", "B"}
+    people = p.list_all()
+    names = {entry.name for entry in people}
+    assert names == {"A", "B"}
 
 
 def test_render_people_md_empty(tmp_path: Path):

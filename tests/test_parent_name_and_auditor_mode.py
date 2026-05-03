@@ -71,9 +71,10 @@ def test_settings_parent_name_route_persists(kid_client: TestClient) -> None:
     assert r.status_code == 303
     assert main_module.effective_kid_parent_display_name() == "Pat"
 
-    # Confirm the file is on disk
-    p = main_module.state.cfg.data_root / main_module.PARENT_DISPLAY_NAME_FILE
-    assert p.read_text(encoding="utf-8").strip() == "Pat"
+    # Confirm the value is in kv_store
+    from app.db_kv import kv_get
+
+    assert kv_get(main_module.state.cfg.data_root, main_module.KV_PARENT_DISPLAY_NAME) == "Pat"
 
 
 def test_settings_parent_name_renders_in_settings_page(kid_client: TestClient) -> None:
@@ -94,8 +95,11 @@ def test_setup_step1_includes_parent_name_field_in_kid_mode(kid_client: TestClie
     # includes the input — render directly via the template.
     import app.main as main_module
 
-    # Force a /setup/1 render by deleting the marker
-    main_module.state.cfg.data_root.joinpath(".setup_complete").unlink()
+    # Force a /setup/1 render by clearing the marker (kv + legacy file)
+    from app.db_kv import kv_delete
+
+    main_module.state.cfg.data_root.joinpath(".setup_complete").unlink(missing_ok=True)
+    kv_delete(main_module.state.cfg.data_root, main_module.KV_SETUP_COMPLETED)
     # Bypass auth for this assertion by calling the template directly via TestClient
     # — we instead verify by GETing /setup/1 with the basic auth header.
     # Adult auth in kid mode for parent admin = BASIC_AUTH_USER + BASIC_AUTH_PASSWORD

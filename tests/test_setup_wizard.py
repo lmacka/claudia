@@ -68,8 +68,9 @@ def test_auto_mark_when_existing_session_log(
 
     main_module = _build_client(tmp_path, monkeypatch)
     with TestClient(main_module.app) as _:
-        # Lifespan ran on startup. Marker should now exist.
-        assert (tmp_path / ".setup_complete").exists()
+        from app.db_kv import kv_exists
+
+        assert kv_exists(tmp_path, main_module.KV_SETUP_COMPLETED)
 
 
 def test_auto_mark_does_not_fire_on_truly_fresh_deploy(
@@ -77,8 +78,10 @@ def test_auto_mark_does_not_fire_on_truly_fresh_deploy(
 ) -> None:
     main_module = _build_client(tmp_path, monkeypatch)
     with TestClient(main_module.app) as _:
-        # Nothing pre-populated; lifespan should NOT have written the marker.
-        assert not (tmp_path / ".setup_complete").exists()
+        from app.db_kv import kv_exists
+
+        # Nothing pre-populated; lifespan should NOT have marked complete.
+        assert not kv_exists(tmp_path, main_module.KV_SETUP_COMPLETED)
 
 
 # ---------------------------------------------------------------------------
@@ -153,8 +156,10 @@ def test_setup_full_flow_writes_background_and_marker(
         assert r.status_code == 303
         assert r.headers["location"] == "/"  # adult mode lands on home
 
-        # Marker written; 01_background.md composed; sidecar gone.
-        assert (tmp_path / ".setup_complete").exists()
+        # Marker written; 01_background.md composed; setup state gone.
+        from app.db_kv import kv_exists
+
+        assert kv_exists(tmp_path, main_module.KV_SETUP_COMPLETED)
         bg = (tmp_path / "context" / "01_background.md").read_text(encoding="utf-8")
         assert "Autistic adult, Brisbane" in bg
         assert "Co-parent friction" in bg

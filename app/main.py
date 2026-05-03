@@ -118,22 +118,22 @@ def _theme_context(request: Request) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Parent display name (kid mode) — file-backed override of the Helm default.
+# Parent display name (kid mode) — DB-backed override of the Helm default.
 # Editable via /setup/1 + /settings; reads on every request so a change
 # applies immediately without a pod restart.
 # ---------------------------------------------------------------------------
 
-PARENT_DISPLAY_NAME_FILE = "parent_display_name.txt"
+KV_PARENT_DISPLAY_NAME = "parent_display_name"
 
 
 def effective_kid_parent_display_name() -> str:
-    """File override → cfg default. The file is written by /setup/1 and /settings."""
+    """kv_store override → cfg default. Set via /setup/1 and /settings."""
+    from app.db_kv import kv_get
+
     try:
-        p = state.cfg.data_root / PARENT_DISPLAY_NAME_FILE
-        if p.exists():
-            value = p.read_text(encoding="utf-8").strip()
-            if value:
-                return value
+        value = kv_get(state.cfg.data_root, KV_PARENT_DISPLAY_NAME)
+        if value and value.strip():
+            return value.strip()
     except (OSError, AttributeError):
         pass
     return state.cfg.kid_parent_display_name
@@ -141,13 +141,13 @@ def effective_kid_parent_display_name() -> str:
 
 def _save_kid_parent_display_name(value: str) -> None:
     """Persist a new parent display name. Empty string clears the override."""
-    p = state.cfg.data_root / PARENT_DISPLAY_NAME_FILE
+    from app.db_kv import kv_delete, kv_set
+
     value = value.strip()
     if not value:
-        p.unlink(missing_ok=True)
+        kv_delete(state.cfg.data_root, KV_PARENT_DISPLAY_NAME)
         return
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(value + "\n", encoding="utf-8")
+    kv_set(state.cfg.data_root, KV_PARENT_DISPLAY_NAME, value)
 
 
 def _parent_name_context(request: Request) -> dict:
@@ -168,21 +168,22 @@ def _google_enabled_context(request: Request) -> dict:
 # cfg.is_adult first.
 # ---------------------------------------------------------------------------
 
-GOOGLE_ENABLED_FILE = "google_enabled.txt"
+KV_GOOGLE_ENABLED = "google_enabled"
 
 
 def effective_google_enabled(cfg: config_module.Config | None = None) -> bool:
-    """File override → cfg default. Adult mode only — kid mode caller short-circuits.
+    """kv_store override → cfg default. Adult mode only — kid caller short-circuits.
 
     cfg is optional; when omitted, reads state.cfg (request-time path).
     Tests pass cfg explicitly to avoid global-state coupling.
     """
+    from app.db_kv import kv_get
+
     cfg = cfg if cfg is not None else state.cfg
     try:
-        p = cfg.data_root / GOOGLE_ENABLED_FILE
-        if p.exists():
-            value = p.read_text(encoding="utf-8").strip().lower()
-            return value in ("1", "true", "yes")
+        value = kv_get(cfg.data_root, KV_GOOGLE_ENABLED)
+        if value is not None:
+            return value.strip().lower() in ("1", "true", "yes")
     except (OSError, AttributeError):
         pass
     return cfg.adult_integrations_google_enabled
@@ -190,9 +191,9 @@ def effective_google_enabled(cfg: config_module.Config | None = None) -> bool:
 
 def _save_google_enabled(value: bool) -> None:
     """Persist the override. Always writes — explicit on or off."""
-    p = state.cfg.data_root / GOOGLE_ENABLED_FILE
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text("true\n" if value else "false\n", encoding="utf-8")
+    from app.db_kv import kv_set
+
+    kv_set(state.cfg.data_root, KV_GOOGLE_ENABLED, "true" if value else "false")
 
 
 # ---------------------------------------------------------------------------
@@ -335,24 +336,23 @@ async def lifespan(app: FastAPI):
     state.templates.env.globals["crisis_footer_text"] = safety.CRISIS_FOOTER_TEXT
     state.templates.env.globals["au_hotlines"] = safety.AU_HOTLINES
 
-    # Setup-complete marker. Existing live deploys (sessions or library
-    # populated) get auto-marked so /setup doesn't bounce them. Fresh
-    # installs go through the wizard.
-    marker = cfg.data_root / ".setup_complete"
-    if not marker.exists():
+    # Setup-complete marker. Existing live deploys (sessions, library, or
+    # legacy .setup_complete file) get auto-marked so /setup doesn't bounce
+    # them after the v0.7.0 storage migration. Fresh installs go through
+    # the wizard.
+    if not _setup_complete():
+        legacy_marker = cfg.data_root / ".setup_complete"
         looks_used = (
-            any((cfg.data_root / "sessions").glob("*.jsonl"))
+            legacy_marker.exists()
+            or any((cfg.data_root / "sessions").glob("*.jsonl"))
             or any((cfg.data_root / "session-logs").glob("*.md"))
             or (cfg.data_root / "library" / "manifest.json").exists()
             or (cfg.data_root / "context" / "01_background.md").exists()
         )
         if looks_used:
             try:
-                marker.write_text(
-                    "auto-marked at first startup of v0.5.0; instance had pre-existing data\n",
-                    encoding="utf-8",
-                )
-                log.info("setup.auto_marked_existing_deploy", path=str(marker))
+                _mark_setup_complete("auto-marked at v0.7.0 boot; legacy data on disk")
+                log.info("setup.auto_marked_existing_deploy")
             except OSError as e:
                 log.warning("setup.auto_mark_failed", error=str(e))
 
@@ -792,31 +792,48 @@ async def admin_review(
 # ---------------------------------------------------------------------------
 
 
-def _setup_state_path() -> Path:
-    return state.cfg.data_root / ".setup_state.json"
+KV_SETUP_STATE = "setup_wizard_state"
+KV_SETUP_COMPLETED = "setup_completed_at"
 
 
 def _setup_state_load() -> dict:
-    p = _setup_state_path()
-    if not p.exists():
+    """Working state during the wizard. Persists to kv_store."""
+    from app.db_kv import kv_get
+
+    raw = kv_get(state.cfg.data_root, KV_SETUP_STATE)
+    if not raw:
         return {}
     try:
-        return json.loads(p.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        return json.loads(raw)
+    except json.JSONDecodeError:
         return {}
 
 
 def _setup_state_save(updates: dict) -> None:
-    p = _setup_state_path()
+    from app.db_kv import kv_set
+
     cur = _setup_state_load()
     cur.update(updates)
-    tmp = p.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(cur, indent=2), encoding="utf-8")
-    tmp.replace(p)
+    kv_set(state.cfg.data_root, KV_SETUP_STATE, json.dumps(cur))
 
 
-def _setup_marker() -> Path:
-    return state.cfg.data_root / ".setup_complete"
+def _setup_state_clear() -> None:
+    from app.db_kv import kv_delete
+
+    kv_delete(state.cfg.data_root, KV_SETUP_STATE)
+
+
+def _setup_complete() -> bool:
+    """True once the wizard has been finished (or auto-marked at boot)."""
+    from app.db_kv import kv_exists
+
+    return kv_exists(state.cfg.data_root, KV_SETUP_COMPLETED)
+
+
+def _mark_setup_complete(note: str = "") -> None:
+    from app.db_kv import kv_set
+
+    kv_set(state.cfg.data_root, KV_SETUP_COMPLETED, note or datetime.now(UTC).isoformat())
 
 
 @app.get("/setup", response_class=HTMLResponse)
@@ -937,14 +954,8 @@ async def setup_step3_submit(_: str = Depends(require_setup_auth)) -> Response:
     bg_path.write_text(body, encoding="utf-8")
 
     # Mark complete; clean up working state.
-    _setup_marker().write_text(
-        f"setup completed at {datetime.now(UTC).isoformat()}\n",
-        encoding="utf-8",
-    )
-    try:
-        _setup_state_path().unlink(missing_ok=True)
-    except OSError:
-        pass
+    _mark_setup_complete()
+    _setup_state_clear()
 
     log.info("setup.completed", data_root=str(cfg.data_root))
     # Adult → home; kid → admin home.
@@ -956,7 +967,7 @@ async def setup_step3_submit(_: str = Depends(require_setup_auth)) -> Response:
 async def home(request: Request, _: str = Depends(require_auth)) -> Response:
     # First-run gate. If the parent (or adult) hasn't run the wizard yet,
     # bounce here. Existing live deploys are auto-marked complete on startup.
-    if not _setup_marker().exists():
+    if not _setup_complete():
         return RedirectResponse(url="/setup/1", status_code=303)
     sessions = state.store.list_sessions()
     active = state.store.active_session()

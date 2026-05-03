@@ -1,12 +1,14 @@
 """
 People store: structured records of the people in the user's life that the
-companion + auditor reference.
-
-Mirrors app/library.py: one folder per entity, manifest, atomic writes,
-fcntl locks. Auditor proposes adds/updates after each session; user
-manages via /people.
+companion + auditor reference. T-NEW-I phase 3: metadata moves to the SQLite
+people table; notes.md still lives on the filesystem under
+/data/people/<person_id>/.
 
 Per docs/library-people-plan.md.
+
+The public API is preserved verbatim — the /people route handlers, the
+list_people / lookup_person / search_people tools, and the auditor's
+people_updates application all continue to work without changes.
 """
 
 from __future__ import annotations
@@ -25,6 +27,8 @@ from typing import Any, Literal
 import structlog
 from pydantic import BaseModel, Field, field_validator
 
+from app.db import connect, migrate, transaction
+
 log = structlog.get_logger()
 
 
@@ -42,7 +46,8 @@ PersonStatus = Literal["active", "archived"]
 
 
 class PersonMeta(BaseModel):
-    """meta.json schema for one person."""
+    """Schema for one person. Stored as a row in the people table; the full
+    payload is also serialised to meta_json for forward-compat."""
 
     id: str
     name: str
@@ -105,13 +110,20 @@ def _levenshtein(a: str, b: str) -> int:
 
 
 class People:
-    """Owns every read/write under /data/people/."""
+    """SQLite-backed people store (T-NEW-I phase 3).
+
+    Metadata in the people table; notes.md still on disk under <root>/<id>/
+    (notes can grow large and are append-friendly without DB churn). Manifest
+    rebuild is a no-op — the table IS the manifest.
+    """
 
     def __init__(self, root: Path) -> None:
         self.root = root
         self.locks_dir = root / ".locks"
         self.root.mkdir(parents=True, exist_ok=True)
         self.locks_dir.mkdir(parents=True, exist_ok=True)
+        self._data_root = root.parent
+        migrate(self._data_root)
 
     # --- locks --------------------------------------------------------------
 
@@ -126,7 +138,7 @@ class People:
             fcntl.flock(fd, fcntl.LOCK_UN)
             os.close(fd)
 
-    # --- paths --------------------------------------------------------------
+    # --- paths (notes blob only — meta lives in DB) -------------------------
 
     def _person_dir(self, person_id: str) -> Path:
         if "/" in person_id or ".." in person_id or person_id.startswith("."):
@@ -138,14 +150,8 @@ class People:
             raise ValueError(f"person id escapes people root: {person_id!r}") from e
         return candidate
 
-    def _meta_path(self, person_id: str) -> Path:
-        return self._person_dir(person_id) / "meta.json"
-
     def _notes_path(self, person_id: str) -> Path:
         return self._person_dir(person_id) / "notes.md"
-
-    def _manifest_path(self) -> Path:
-        return self.root / "manifest.json"
 
     # --- atomic write -------------------------------------------------------
 
@@ -158,35 +164,66 @@ class People:
             tmp.write_bytes(content)
         os.replace(tmp, path)
 
-    def _write_meta(self, person_id: str, meta: PersonMeta) -> None:
-        payload = meta.model_dump(mode="json")
-        self._atomic_write(
-            self._meta_path(person_id),
-            json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True),
-        )
+    # --- DB helpers ---------------------------------------------------------
+
+    def _row_to_meta(self, row) -> PersonMeta | None:
+        try:
+            data = json.loads(row["meta_json"])
+            return PersonMeta.model_validate(data)
+        except (json.JSONDecodeError, ValueError) as e:
+            log.error("people.meta_parse_failed", person_id=row["id"], error=str(e))
+            return None
 
     def _read_meta(self, person_id: str) -> PersonMeta | None:
-        path = self._meta_path(person_id)
-        if not path.exists():
+        with connect(self._data_root) as db:
+            row = db.execute(
+                "SELECT * FROM people WHERE id = ?", (person_id,)
+            ).fetchone()
+        if row is None:
             return None
-        try:
-            return PersonMeta.model_validate(json.loads(path.read_text(encoding="utf-8")))
-        except (OSError, json.JSONDecodeError, ValueError) as e:
-            log.error("people.meta_read_failed", person_id=person_id, error=str(e))
-            return None
+        return self._row_to_meta(row)
+
+    def _write_meta(self, person_id: str, meta: PersonMeta) -> None:
+        payload = meta.model_dump(mode="json")
+        meta_json = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        with connect(self._data_root) as db, transaction(db):
+            db.execute(
+                """INSERT INTO people (
+                    id, name, category, status, last_mentioned, meta_json
+                ) VALUES (?,?,?,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET
+                    name=excluded.name,
+                    category=excluded.category,
+                    status=excluded.status,
+                    last_mentioned=excluded.last_mentioned,
+                    meta_json=excluded.meta_json""",
+                (
+                    meta.id,
+                    meta.name,
+                    meta.category,
+                    meta.status,
+                    meta.last_mentioned.isoformat() if meta.last_mentioned else None,
+                    meta_json,
+                ),
+            )
 
     # --- id minting ---------------------------------------------------------
 
     def mint_id(self, name: str) -> str:
         """Slug + collision-handled. Unique across active+archived."""
         base = _name_slug(name)
-        with self._lock("manifest"):
-            candidate = base
-            n = 2
-            while (self.root / candidate).exists():
+        candidate = base
+        n = 2
+        with self._lock("manifest"), connect(self._data_root) as db:
+            while True:
+                exists_in_db = db.execute(
+                    "SELECT 1 FROM people WHERE id = ?", (candidate,)
+                ).fetchone()
+                exists_on_disk = (self.root / candidate).exists()
+                if not exists_in_db and not exists_on_disk:
+                    return candidate
                 candidate = f"{base}-{n}"
                 n += 1
-            return candidate
 
     # --- public CRUD --------------------------------------------------------
 
@@ -218,10 +255,10 @@ class People:
             updated_at=now,
         )
         with self._lock(f"person-{person_id}"):
-            self._person_dir(person_id).mkdir(parents=True, exist_ok=False)
-            self._write_meta(person_id, meta)
+            # Notes file lives on disk; meta in DB.
+            self._person_dir(person_id).mkdir(parents=True, exist_ok=True)
             self._atomic_write(self._notes_path(person_id), notes)
-        self.rebuild_manifest()
+            self._write_meta(person_id, meta)
         log.info("people.person_added", person_id=person_id, name=name)
         return person_id
 
@@ -235,17 +272,15 @@ class People:
         return path.read_text(encoding="utf-8")
 
     def list_all(self) -> list[PersonMeta]:
+        with connect(self._data_root) as db:
+            rows = db.execute(
+                "SELECT * FROM people ORDER BY LOWER(name) ASC"
+            ).fetchall()
         results: list[PersonMeta] = []
-        if not self.root.exists():
-            return results
-        for entry in self.root.iterdir():
-            if not entry.is_dir() or entry.name.startswith("."):
-                continue
-            meta = self._read_meta(entry.name)
+        for row in rows:
+            meta = self._row_to_meta(row)
             if meta is not None:
                 results.append(meta)
-        # Sort by name (case-insensitive) for predictable UI ordering.
-        results.sort(key=lambda m: m.name.lower())
         return results
 
     def list_active(self) -> list[PersonMeta]:
@@ -261,13 +296,13 @@ class People:
                 raise KeyError(f"person {person_id} not found")
             patched = current.model_copy(update={**fields, "updated_at": datetime.now(UTC)})
             self._write_meta(person_id, patched)
-        self.rebuild_manifest()
         return patched
 
     def replace_notes(self, person_id: str, content: str) -> None:
         with self._lock(f"person-{person_id}"):
-            if not self._person_dir(person_id).exists():
+            if self._read_meta(person_id) is None:
                 raise KeyError(f"person {person_id} not found")
+            self._person_dir(person_id).mkdir(parents=True, exist_ok=True)
             self._atomic_write(self._notes_path(person_id), content)
             self.update_silent(person_id, updated_at=datetime.now(UTC))
         log.info("people.notes_replaced", person_id=person_id, chars=len(content))
@@ -275,8 +310,9 @@ class People:
     def append_note(self, person_id: str, addition: str) -> None:
         """Auditor-friendly: append a paragraph to notes.md."""
         with self._lock(f"person-{person_id}"):
-            if not self._person_dir(person_id).exists():
+            if self._read_meta(person_id) is None:
                 raise KeyError(f"person {person_id} not found")
+            self._person_dir(person_id).mkdir(parents=True, exist_ok=True)
             existing = self.get_notes(person_id) or ""
             stamp = datetime.now(UTC).strftime("%Y-%m-%d")
             block = (
@@ -287,7 +323,8 @@ class People:
             self.update_silent(person_id, updated_at=datetime.now(UTC))
 
     def update_silent(self, person_id: str, **fields: Any) -> None:
-        """Like update() but skips manifest rebuild (caller handles batching)."""
+        """Like update() but skips logging. Used internally to bump
+        updated_at without a separate log entry."""
         current = self._read_meta(person_id)
         if current is None:
             raise KeyError(f"person {person_id} not found")
@@ -308,7 +345,6 @@ class People:
                 }
             )
             self._write_meta(person_id, patched)
-        self.rebuild_manifest()
 
     def unlink_doc(self, person_id: str, doc_id: str) -> None:
         with self._lock(f"person-{person_id}"):
@@ -322,7 +358,6 @@ class People:
                 update={"linked_documents": new_links, "updated_at": datetime.now(UTC)}
             )
             self._write_meta(person_id, patched)
-        self.rebuild_manifest()
 
     def touch(self, person_id: str) -> None:
         """Bump last_mentioned. Used by lookup_person tool."""
@@ -333,8 +368,6 @@ class People:
             now = datetime.now(UTC)
             patched = current.model_copy(update={"last_mentioned": now, "updated_at": now})
             self._write_meta(person_id, patched)
-        # No manifest rebuild — last_mentioned is bumped frequently and the
-        # manifest is consumed by the UI / system prompt at request time.
 
     def archive(self, person_id: str) -> None:
         self.update(person_id, status="archived")
@@ -351,11 +384,13 @@ class People:
         """Hard delete — no soft tier per spec (people records are small,
         archive is enough soft-delete)."""
         with self._lock(f"person-{person_id}"):
+            with connect(self._data_root) as db, transaction(db):
+                cur = db.execute("DELETE FROM people WHERE id = ?", (person_id,))
+                if cur.rowcount == 0:
+                    raise KeyError(f"person {person_id} not found")
             person_dir = self._person_dir(person_id)
-            if not person_dir.exists():
-                raise KeyError(f"person {person_id} not found")
-            shutil.rmtree(person_dir)
-        self.rebuild_manifest()
+            if person_dir.exists():
+                shutil.rmtree(person_dir)
         log.info("people.person_deleted", person_id=person_id)
 
     # --- search -------------------------------------------------------------
@@ -389,29 +424,18 @@ class People:
                 out.append(meta)
         return out
 
-    # --- manifest -----------------------------------------------------------
+    # --- manifest (no-op back-compat) --------------------------------------
 
     def rebuild_manifest(self) -> None:
-        with self._lock("manifest"):
-            entries = [m.model_dump(mode="json") for m in self.list_all()]
-            payload = {
-                "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
-                "count": len(entries),
-                "entries": entries,
-            }
-            self._atomic_write(
-                self._manifest_path(),
-                json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=False),
-            )
+        """No-op since v0.7.0 — the DB is the manifest."""
+        return
 
     # --- people.md rendering ------------------------------------------------
 
     def render_people_md(self) -> str:
-        """
-        Markdown roster of every active person, intended to feed the
-        companion's system-prompt block 2 alongside INDEX.md.
-        """
-        active = [p for p in self.list_active()]
+        """Markdown roster of every active person, intended to feed the
+        companion's system-prompt block 2 alongside INDEX.md."""
+        active = self.list_active()
         if not active:
             return "# people.md\n\n(no people known yet)"
         lines = ["# people.md", ""]
