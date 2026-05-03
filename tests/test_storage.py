@@ -1,4 +1,8 @@
-"""Storage layer — NFSSessionStore JSONL + InMemorySessionStore + SqliteSessionStore."""
+"""Storage layer — InMemorySessionStore + SqliteSessionStore.
+
+NFSSessionStore was removed in v0.8.0 phase A — production was already on
+SqliteSessionStore (T-NEW-I, v0.7.0); the JSONL implementation became dead
+code with no callers."""
 
 from __future__ import annotations
 
@@ -9,16 +13,10 @@ import pytest
 from app.storage import (
     InMemorySessionStore,
     Message,
-    NFSSessionStore,
     SessionHeader,
     new_session_id,
 )
 from app.storage_sqlite import SqliteSessionStore
-
-
-@pytest.fixture
-def nfs_store(tmp_path: Path) -> NFSSessionStore:
-    return NFSSessionStore(tmp_path)
 
 
 @pytest.fixture
@@ -31,7 +29,7 @@ def sqlite_store(tmp_path: Path) -> SqliteSessionStore:
     return SqliteSessionStore(tmp_path)
 
 
-STORES = ["nfs_store", "mem_store", "sqlite_store"]
+STORES = ["mem_store", "sqlite_store"]
 
 
 def _header(session_id: str) -> SessionHeader:
@@ -100,35 +98,6 @@ def test_active_session_returns_first_active(request, store_name):
     active = store.active_session()
     assert active is not None
     assert active.session_id == sid2
-
-
-def test_nfs_store_persists_across_instances(tmp_path: Path):
-    """Sanity: a second NFSSessionStore on the same dir sees prior data."""
-    store1 = NFSSessionStore(tmp_path)
-    sid = new_session_id("vent")
-    store1.create_session(_header(sid))
-    store1.append_message(sid, Message(role="user", content="persisted"))
-
-    store2 = NFSSessionStore(tmp_path)
-    h = store2.load_header(sid)
-    assert h.session_id == sid
-    msgs = store2.load_messages(sid)
-    assert msgs[0].content == "persisted"
-
-
-def test_nfs_store_append_is_true_append(tmp_path: Path):
-    """Each append adds one line — no full rewrite."""
-    store = NFSSessionStore(tmp_path)
-    sid = new_session_id("vent")
-    store.create_session(_header(sid))
-    path = store.sessions_dir / f"{sid}.jsonl"
-    size_after_create = path.stat().st_size
-
-    store.append_message(sid, Message(role="user", content="x"))
-    size_after_append = path.stat().st_size
-    assert size_after_append > size_after_create
-    # Must still have the original header line.
-    assert size_after_append - size_after_create > 10
 
 
 # ---------------------------------------------------------------------------

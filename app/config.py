@@ -38,13 +38,24 @@ PersonaMode = Literal["adult", "kid"]
 
 @dataclass(frozen=True)
 class Config:
+    """Operational configuration loaded from env vars at boot.
+
+    Credentials (anthropic_api_key, google_client_id/secret/redirect_uri,
+    basic_auth_password) are **boot-time fallbacks only** in v0.8+. The
+    runtime config layer (app/runtime_config.py) reads env first, kv_store
+    second; user edits made via /setup or /settings persist to kv_store.
+    Use runtime_config_mod.get_anthropic_key(cfg.data_root) etc. instead of
+    reading these fields directly. The fields stay here so existing test
+    fixtures + the lifespan auto-import know what env names to look at.
+    """
+
     mode: PersonaMode
     ops_mode: OpsMode
     data_root: Path
     prompts_dir: Path
-    anthropic_api_key: str  # empty in local mode
+    anthropic_api_key: str  # boot-time fallback; runtime_config is the canonical reader
     basic_auth_user: str
-    basic_auth_password: str  # empty in local mode
+    basic_auth_password: str  # required in kid mode (parent admin); empty otherwise
     default_model: str
     dev_model: str
     classifier_model: str
@@ -108,11 +119,12 @@ def load() -> Config:
     adult_google_enabled = google_enabled_raw.strip().lower() in ("1", "true", "yes")
 
     if ops_mode in ("dev", "prod"):
-        if not api_key:
-            raise RuntimeError("ANTHROPIC_API_KEY is required in dev/prod mode")
-        # BASIC_AUTH_PASSWORD only required in kid mode (parent admin password
-        # for /admin/*). Adult mode auth is now cookie-based — the password
-        # is set by the user during /setup/1.
+        # ANTHROPIC_API_KEY no longer required at boot — v0.8 captures it via
+        # /setup/1 and stores in kv_store (see app/runtime_config.py). The
+        # app boots without it; routes that need it (chat, auditor, /report)
+        # raise a clear assertion if both env and kv are empty.
+        # BASIC_AUTH_PASSWORD still required in kid mode for the parent
+        # admin (/admin/*); kid mode setup is operator-side, not in-app.
         if mode == "kid" and not auth_pw:
             raise RuntimeError("BASIC_AUTH_PASSWORD is required in kid mode (parent admin)")
 

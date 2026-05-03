@@ -1,30 +1,24 @@
 """
-Session storage for claudia.
+Session storage protocol + types + the in-memory implementation.
 
-Design:
-- One JSONL file per session under /data/sessions/.
-- First line = session header (mode, model, prompt_sha, created_at).
-- Subsequent lines = message or event records (append-only).
-- fcntl exclusive locks on /data/.locks/<resource>.lock for every mutation.
+The production / dev backing store is `SqliteSessionStore` in
+`app/storage_sqlite.py` (T-NEW-I, v0.7.0). This module hosts:
 
-Two implementations:
-- NFSSessionStore: prod, reads/writes /data.
-- InMemorySessionStore: tests + --local mode.
+- The `SessionStore` Protocol every implementation conforms to
+- The `SessionHeader` / `Message` / `SessionMeta` dataclasses
+- The `new_session_id` factory
+- `InMemorySessionStore`, used by the parametrized storage tests as a
+  fast in-process implementation. No production code instantiates it.
 
-The two implement the same SessionStore Protocol.
+The legacy `NFSSessionStore` (JSONL on /data) was removed in v0.8.0
+phase A — see /home/liamm/.claude/plans/ok-but-first-inspect-crystalline-seal.md.
 """
 
 from __future__ import annotations
 
-import contextlib
-import fcntl
-import json
-import os
 import uuid
-from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any, Protocol
 
 import structlog
@@ -90,192 +84,7 @@ class SessionStore(Protocol):
 
 
 # ---------------------------------------------------------------------------
-# NFS implementation
-# ---------------------------------------------------------------------------
-
-
-class NFSSessionStore:
-    """
-    Append-only JSONL per session on /data.
-
-    Record types on disk:
-        {"type": "header", ...}
-        {"type": "message", ...}
-        {"type": "event", ...}
-
-    Header is written once (first line); updates are append-only "header_update"
-    records. On read, the final header is reconstructed by folding header_updates
-    over the initial header.
-    """
-
-    def __init__(self, data_root: Path) -> None:
-        self.data_root = data_root
-        self.sessions_dir = data_root / "sessions"
-        self.locks_dir = data_root / ".locks"
-        self.sessions_dir.mkdir(parents=True, exist_ok=True)
-        self.locks_dir.mkdir(parents=True, exist_ok=True)
-
-    # --- lock helper --------------------------------------------------------
-
-    @contextlib.contextmanager
-    def _lock(self, resource: str) -> Iterator[None]:
-        """Exclusive fcntl lock on /data/.locks/<resource>.lock."""
-        lock_path = self.locks_dir / f"{resource}.lock"
-        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX)
-            yield
-        finally:
-            fcntl.flock(fd, fcntl.LOCK_UN)
-            os.close(fd)
-
-    # --- path helpers -------------------------------------------------------
-
-    def _session_path(self, session_id: str) -> Path:
-        return self.sessions_dir / f"{session_id}.jsonl"
-
-    def _append(self, session_id: str, record: dict[str, Any]) -> None:
-        path = self._session_path(session_id)
-        with self._lock(f"session-{session_id}"), path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(record, separators=(",", ":")) + "\n")
-            fh.flush()
-            os.fsync(fh.fileno())
-
-    # --- protocol methods --------------------------------------------------
-
-    def create_session(self, header: SessionHeader) -> None:
-        path = self._session_path(header.session_id)
-        if path.exists():
-            raise FileExistsError(f"session {header.session_id} already exists")
-        self._append(
-            header.session_id,
-            {"type": "header", **header.__dict__},
-        )
-        log.info("session.created", session_id=header.session_id, mode=header.mode)
-
-    def append_message(self, session_id: str, message: Message) -> None:
-        self._append(
-            session_id,
-            {"type": "message", **message.__dict__},
-        )
-
-    def append_event(
-        self, session_id: str, event_type: str, payload: dict[str, Any]
-    ) -> None:
-        self._append(
-            session_id,
-            {
-                "type": "event",
-                "event_type": event_type,
-                "ts": datetime.now(UTC).isoformat(),
-                "payload": payload,
-            },
-        )
-
-    def load_header(self, session_id: str) -> SessionHeader:
-        path = self._session_path(session_id)
-        if not path.exists():
-            raise FileNotFoundError(session_id)
-        header_dict: dict[str, Any] = {}
-        with path.open("r", encoding="utf-8") as fh:
-            for line in fh:
-                try:
-                    record = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                rtype = record.get("type")
-                if rtype == "header":
-                    header_dict = {k: v for k, v in record.items() if k != "type"}
-                elif rtype == "header_update":
-                    header_dict.update(record.get("changes", {}))
-        if not header_dict:
-            raise ValueError(f"session {session_id} has no header")
-        return SessionHeader(**header_dict)
-
-    def update_header(self, session_id: str, **changes: Any) -> None:
-        self._append(
-            session_id,
-            {
-                "type": "header_update",
-                "ts": datetime.now(UTC).isoformat(),
-                "changes": changes,
-            },
-        )
-
-    def load_messages(self, session_id: str) -> list[Message]:
-        path = self._session_path(session_id)
-        if not path.exists():
-            raise FileNotFoundError(session_id)
-        out: list[Message] = []
-        with path.open("r", encoding="utf-8") as fh:
-            for line in fh:
-                try:
-                    record = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if record.get("type") == "message":
-                    out.append(
-                        Message(
-                            role=record["role"],
-                            content=record["content"],
-                            ts=record.get(
-                                "ts", datetime.now(UTC).isoformat()
-                            ),
-                            meta=record.get("meta", {}),
-                        )
-                    )
-        return out
-
-    def list_sessions(self) -> list[SessionMeta]:
-        out: list[SessionMeta] = []
-        for path in sorted(self.sessions_dir.glob("*.jsonl"), reverse=True):
-            session_id = path.stem
-            try:
-                header = self.load_header(session_id)
-            except (FileNotFoundError, ValueError):
-                continue
-            try:
-                mtime = datetime.fromtimestamp(
-                    path.stat().st_mtime, tz=UTC
-                ).isoformat()
-            except OSError:
-                mtime = header.created_at
-            out.append(
-                SessionMeta(
-                    session_id=session_id,
-                    created_at=header.created_at,
-                    mode=header.mode,
-                    model=header.model,
-                    status=header.status,
-                    title=header.title,
-                    last_activity=mtime,
-                )
-            )
-        return out
-
-    def active_session(self) -> SessionMeta | None:
-        for meta in self.list_sessions():
-            if meta.status == "active":
-                return meta
-        return None
-
-    def has_event(self, session_id: str, event_type: str) -> bool:
-        path = self._session_path(session_id)
-        if not path.exists():
-            return False
-        with path.open("r", encoding="utf-8") as fh:
-            for line in fh:
-                try:
-                    record = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if record.get("type") == "event" and record.get("event_type") == event_type:
-                    return True
-        return False
-
-
-# ---------------------------------------------------------------------------
-# In-memory implementation (tests + --local)
+# In-memory implementation (tests only; production uses SqliteSessionStore)
 # ---------------------------------------------------------------------------
 
 

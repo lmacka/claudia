@@ -142,3 +142,26 @@ class ClaudeClient:
             cache_read=usage.cache_read_tokens,
         )
         return Reply(text=text, usage=usage, model=model, stop_reason=raw.stop_reason)
+
+
+# Module-level cache so we don't re-instantiate the SDK on every request.
+# Keyed by api_key string; rotating the key (e.g. via /settings) creates a
+# new client transparently. Empty key returns None — caller decides how to
+# handle the no-key case (typically: render an error / route to /setup/1).
+_CLIENT_CACHE: dict[str, ClaudeClient] = {}
+
+
+def get_client(api_key: str) -> ClaudeClient | None:
+    """Return a cached ClaudeClient for the given api_key, or None if empty.
+
+    Replaces the v0.7.x pattern of constructing once at lifespan and
+    storing on state.claude. Lets callers pick up key changes from
+    runtime_config without a pod restart.
+    """
+    if not api_key:
+        return None
+    client = _CLIENT_CACHE.get(api_key)
+    if client is None:
+        client = ClaudeClient(api_key=api_key)
+        _CLIENT_CACHE[api_key] = client
+    return client

@@ -69,35 +69,51 @@ def _seed_state(tmp_path: Path):
     yield
 
 
+def _seed_oauth_credentials_in_kv(data_root: Path) -> None:
+    """v0.8 phase A: Google credentials are read by `_google_cfg` via
+    `runtime_config.get_google_creds()`, which checks env then kv_store —
+    cfg.google_client_* fields are no longer consulted directly. Tests that
+    used to pass values via Config(google_client_id="cid") now write to
+    kv_store instead."""
+    from app import db_kv
+    from app.runtime_config import KV_GOOGLE_CLIENT_ID, KV_GOOGLE_CLIENT_SECRET
+
+    db_kv.kv_set(data_root, KV_GOOGLE_CLIENT_ID, "cid")
+    db_kv.kv_set(data_root, KV_GOOGLE_CLIENT_SECRET, "csec")
+
+
 def test_kid_mode_never_registers_google_tools_even_with_secrets(tmp_path: Path) -> None:
     """Kid mode + OAuth secrets present + flag on → still no Google tools."""
+    _seed_oauth_credentials_in_kv(tmp_path)
     cfg = _build_cfg(tmp_path, mode="kid", google_enabled=True, with_oauth_secrets=True)
     reg = main_module._build_tool_registry(cfg)
-    assert GOOGLE_TOOL_NAMES.isdisjoint(reg.names()), (
-        f"kid mode must not register Google tools; got {reg.names() & GOOGLE_TOOL_NAMES}"
+    assert GOOGLE_TOOL_NAMES.isdisjoint(set(reg.names())), (
+        f"kid mode must not register Google tools; got {set(reg.names()) & GOOGLE_TOOL_NAMES}"
     )
 
 
 def test_adult_mode_default_no_google_tools(tmp_path: Path) -> None:
     """Adult mode, flag NOT set, secrets present → tools off (default-off posture)."""
+    _seed_oauth_credentials_in_kv(tmp_path)
     cfg = _build_cfg(tmp_path, mode="adult", google_enabled=False, with_oauth_secrets=True)
     reg = main_module._build_tool_registry(cfg)
-    assert GOOGLE_TOOL_NAMES.isdisjoint(reg.names())
+    assert GOOGLE_TOOL_NAMES.isdisjoint(set(reg.names()))
 
 
 def test_adult_mode_flag_on_secrets_missing_no_google_tools(tmp_path: Path) -> None:
     """Adult mode + flag on but no OAuth secrets → tools still not registered."""
     cfg = _build_cfg(tmp_path, mode="adult", google_enabled=True, with_oauth_secrets=False)
     reg = main_module._build_tool_registry(cfg)
-    assert GOOGLE_TOOL_NAMES.isdisjoint(reg.names())
+    assert GOOGLE_TOOL_NAMES.isdisjoint(set(reg.names()))
 
 
 def test_adult_mode_flag_on_with_secrets_registers_google_tools(tmp_path: Path) -> None:
     """Adult mode + flag on + secrets present → tools registered."""
+    _seed_oauth_credentials_in_kv(tmp_path)
     cfg = _build_cfg(tmp_path, mode="adult", google_enabled=True, with_oauth_secrets=True)
     reg = main_module._build_tool_registry(cfg)
-    assert GOOGLE_TOOL_NAMES.issubset(reg.names()), (
-        f"missing Google tools: {GOOGLE_TOOL_NAMES - reg.names()}"
+    assert GOOGLE_TOOL_NAMES.issubset(set(reg.names())), (
+        f"missing Google tools: {GOOGLE_TOOL_NAMES - set(reg.names())}"
     )
 
 
@@ -124,22 +140,24 @@ def test_google_enabled_helper_kid_always_false(tmp_path: Path) -> None:
 
 def test_file_override_enables_when_env_off(tmp_path: Path) -> None:
     """Adult mode + env off + file says true → tools registered."""
+    _seed_oauth_credentials_in_kv(tmp_path)
     cfg = _build_cfg(tmp_path, mode="adult", google_enabled=False, with_oauth_secrets=True)
     main_module.state.cfg = cfg
     main_module._save_google_enabled(True)
     assert main_module._google_enabled(cfg) is True
     reg = main_module._build_tool_registry(cfg)
-    assert GOOGLE_TOOL_NAMES.issubset(reg.names())
+    assert GOOGLE_TOOL_NAMES.issubset(set(reg.names()))
 
 
 def test_file_override_disables_when_env_on(tmp_path: Path) -> None:
     """Adult mode + env on + file says false → tools not registered."""
+    _seed_oauth_credentials_in_kv(tmp_path)
     cfg = _build_cfg(tmp_path, mode="adult", google_enabled=True, with_oauth_secrets=True)
     main_module.state.cfg = cfg
     main_module._save_google_enabled(False)
     assert main_module._google_enabled(cfg) is False
     reg = main_module._build_tool_registry(cfg)
-    assert GOOGLE_TOOL_NAMES.isdisjoint(reg.names())
+    assert GOOGLE_TOOL_NAMES.isdisjoint(set(reg.names()))
 
 
 def test_kid_mode_ignores_file_override(tmp_path: Path) -> None:

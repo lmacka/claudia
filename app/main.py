@@ -45,12 +45,14 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from app import auth as auth_mod
+from app import claude as claude_mod
 from app import config as config_module
 from app import google_auth, library_pipeline, safety
+from app import runtime_config as runtime_config_mod
 from app import setup_autodraft as setup_autodraft_mod
 from app import summariser as summariser_mod
 from app import tool_loop as tool_loop_mod
-from app.claude import SONNET, ClaudeClient, Usage
+from app.claude import SONNET, Usage
 from app.context import TZ as BRISBANE_TZ
 from app.context import ContextLoader
 from app.extractors import build_registry, make_vision_callables
@@ -206,7 +208,6 @@ class AppState:
     cfg: config_module.Config
     store: SessionStore
     loader: ContextLoader
-    claude: ClaudeClient | None
     templates: Jinja2Templates
     app_root: Path
     rate_limiter: auth_mod.IPRateLimiter
@@ -233,10 +234,21 @@ state = AppState()
 
 
 def _google_cfg(cfg: config_module.Config) -> GoogleAuthConfig:
+    """Build GoogleAuthConfig from the runtime config layer.
+
+    Reads client_id/secret/redirect via runtime_config so /settings UI edits
+    or fresh-from-/setup values land here. Env-mounted Helm Secrets still win
+    (per decision 8) — runtime_config handles that precedence internally.
+    Computed default for redirect_uri (when neither env nor kv sets it):
+    https://{cfg.ingress_host}/oauth/callback.
+    """
+    client_id, client_secret, redirect_uri = runtime_config_mod.get_google_creds(cfg.data_root)
+    if not redirect_uri:
+        redirect_uri = f"https://{cfg.ingress_host}/oauth/callback"
     return GoogleAuthConfig(
-        client_id=cfg.google_client_id,
-        client_secret=cfg.google_client_secret,
-        redirect_uri=cfg.google_redirect_uri,
+        client_id=client_id,
+        client_secret=client_secret,
+        redirect_uri=redirect_uri,
         token_path=cfg.data_root / ".credentials" / "google_oauth_token.json",
     )
 
@@ -307,14 +319,27 @@ async def lifespan(app: FastAPI):
         kid_parent_display_name_provider=effective_kid_parent_display_name,
         people_md_provider=lambda: state.people.render_people_md() if hasattr(state, "people") else "",
     )
-    state.claude = None if cfg.is_local else ClaudeClient(api_key=cfg.anthropic_api_key)
     state.rate_limiter = auth_mod.IPRateLimiter()
     state.kid_session_store = auth_mod.SessionStore(cfg.data_root, role="kid")
     state.adult_session_store = auth_mod.SessionStore(cfg.data_root, role="adult")
 
+    # T-NEW-RC (v0.8 phase A): mirror env-mounted credentials into kv_store
+    # so /settings can render their values back even when the Helm Secret is
+    # what's authoritatively in use. ENV stays the source of truth for reads.
+    runtime_config_mod.auto_import_env_secrets(cfg.data_root)
+
     state.library = Library(cfg.data_root / "library")
-    if state.claude is not None:
-        transcribe, spot_check = make_vision_callables(state.claude, model=SONNET)
+    # Vision callables need a Claude client. Local mode = no API; dev/prod
+    # may have an API key from env (cfg.anthropic_api_key) or kv_store
+    # (set via /setup/1). get_client returns None if both are empty —
+    # callers handle the None case (e.g. extractor falls back to no OCR).
+    boot_claude = (
+        None
+        if cfg.is_local
+        else claude_mod.get_client(runtime_config_mod.get_anthropic_key(cfg.data_root))
+    )
+    if boot_claude is not None:
+        transcribe, spot_check = make_vision_callables(boot_claude, model=SONNET)
     else:
         transcribe, spot_check = None, None
     state.extractor_registry = build_registry(transcribe=transcribe, spot_check=spot_check)
@@ -973,7 +998,7 @@ async def setup_step2(request: Request, _: str = Depends(require_setup_auth)) ->
     can_autodraft = (
         bool(docs)
         and not state.cfg.is_local
-        and state.claude is not None
+        and bool(runtime_config_mod.get_anthropic_key(state.cfg.data_root))
     )
     autodraft_error = state_data.pop("autodraft_error", None) if isinstance(state_data, dict) else None
     return state.templates.TemplateResponse(
@@ -993,7 +1018,8 @@ async def setup_step2(request: Request, _: str = Depends(require_setup_auth)) ->
 async def setup_step2_auto_draft(_: str = Depends(require_setup_auth)) -> Response:
     """Run the LLM pass over uploaded library docs, populate the four
     setup textareas with the suggestions, redirect back to /setup/2."""
-    if state.cfg.is_local or state.claude is None:
+    claude = claude_mod.get_client(runtime_config_mod.get_anthropic_key(state.cfg.data_root))
+    if state.cfg.is_local or claude is None:
         # Local mode has no API access; the button shouldn't have been
         # rendered. Defensive 404.
         raise HTTPException(404, "auto-draft requires API access (dev/prod mode)")
@@ -1003,8 +1029,8 @@ async def setup_step2_auto_draft(_: str = Depends(require_setup_auth)) -> Respon
     try:
         suggestions = await asyncio.to_thread(
             setup_autodraft_mod.auto_draft_profile,
-            state.claude,
-            state.cfg.default_model,
+            claude,
+            runtime_config_mod.get_default_model(state.cfg.data_root, state.cfg.default_model),
             state.library,
         )
     except Exception as e:  # noqa: BLE001
@@ -1206,7 +1232,8 @@ def _seed_opener_safe(session_id: str, model: str, blocks) -> None:
 
 
 def _seed_opener(session_id: str, model: str, blocks) -> None:
-    assert state.claude is not None
+    claude = claude_mod.get_client(runtime_config_mod.get_anthropic_key(state.cfg.data_root))
+    assert claude is not None, "opener invoked without an Anthropic API key"
     synthetic_user = "Begin the session."
     state.store.append_message(
         session_id,
@@ -1222,7 +1249,7 @@ def _seed_opener(session_id: str, model: str, blocks) -> None:
     history = [{"role": "user", "content": synthetic_user}]
     tools_reg = _build_tool_registry(state.cfg, session_id=session_id)
     result = tool_loop_mod.run_tool_loop(
-        claude=state.claude,
+        claude=claude,
         model=model,
         blocks=blocks,
         history=history,
@@ -1353,7 +1380,8 @@ async def session_message(
         reply_text = f"[local mock reply] heard: {user_text[:120]!r}"
         result = None
     else:
-        assert state.claude is not None
+        claude = claude_mod.get_client(runtime_config_mod.get_anthropic_key(state.cfg.data_root))
+        assert claude is not None, "session message invoked without an Anthropic API key"
         history: list[dict] = []
         for m in state.store.load_messages(session_id):
             if m.role not in ("user", "assistant"):
@@ -1366,7 +1394,7 @@ async def session_message(
         tools_reg = _build_tool_registry(state.cfg, session_id=session_id)
         result = await asyncio.to_thread(
             tool_loop_mod.run_tool_loop,
-            state.claude,
+            claude,
             header.model or SONNET,
             blocks,
             history,
@@ -1603,9 +1631,10 @@ def _run_audit_and_apply(session_id: str) -> None:
         if state.cfg.is_local:
             report = summariser_mod.mock_auditor_report(inp)
         else:
-            assert state.claude is not None
+            claude = claude_mod.get_client(runtime_config_mod.get_anthropic_key(state.cfg.data_root))
+            assert claude is not None, "auditor invoked without an Anthropic API key"
             report = summariser_mod.run_auditor(
-                state.claude,
+                claude,
                 state.cfg.prompts_dir,
                 header.model or SONNET,
                 inp,
@@ -1707,10 +1736,11 @@ async def report_submit(request: Request, _: str = Depends(require_auth)) -> Res
     if state.cfg.is_local:
         markdown = _mock_handover_markdown(start, end, bundle["session_count"], bundle["mood_entries"])
     else:
-        assert state.claude is not None
+        claude = claude_mod.get_client(runtime_config_mod.get_anthropic_key(state.cfg.data_root))
+        assert claude is not None, "/report invoked without an Anthropic API key"
         markdown = await asyncio.to_thread(
             _run_handover_call,
-            state.claude,
+            claude,
             state.cfg.prompts_dir,
             start,
             end,
@@ -1865,7 +1895,7 @@ def _collect_for_report(data_root: Path, start: date, end: date) -> dict:
 
 
 def _run_handover_call(
-    claude: ClaudeClient,
+    claude: claude_mod.ClaudeClient,
     prompts_dir: Path,
     start: date,
     end: date,
@@ -2318,7 +2348,8 @@ async def session_kid_attach(
         reply_text = f"[local mock reply] OCR'd {filename} ({len(ocr_text)} chars). user said: {user_text!r}"
         loop_result = None
     else:
-        assert state.claude is not None
+        claude = claude_mod.get_client(runtime_config_mod.get_anthropic_key(cfg.data_root))
+        assert claude is not None, "kid-attach invoked without an Anthropic API key"
         history: list[dict] = []
         prior = state.store.load_messages(session_id)
         # Drop the two messages we just appended (user + system_event); we
@@ -2335,7 +2366,7 @@ async def session_kid_attach(
         tools_reg = _build_tool_registry(cfg, session_id=session_id)
         loop_result = await asyncio.to_thread(
             tool_loop_mod.run_tool_loop,
-            state.claude,
+            claude,
             header.model or SONNET,
             blocks,
             history,
