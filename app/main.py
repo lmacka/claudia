@@ -385,7 +385,10 @@ app.mount("/static", StaticFiles(directory=str(Path(__file__).resolve().parent /
 # `require_auth` is the kid-or-adult auth dep used on everything that's
 # NOT /admin. `require_parent_admin` is the basic-auth dep on /admin.
 
-_basic_auth = HTTPBasic(realm="claudia", auto_error=False)
+# Adult-mode auth is cookie-based (set during /setup/1). The only remaining
+# HTTP Basic Auth surface is the kid-mode parent admin (/admin/* +
+# /library + /people in kid mode). Adult deploys never see a Basic Auth
+# prompt on any user-facing route.
 _admin_basic_auth = HTTPBasic(realm="claudia-admin", auto_error=False)
 
 
@@ -2416,14 +2419,13 @@ _LIBRARY_MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # 25 MB; matches legacy /upload ca
 
 def require_library_access(
     request: Request,
-    credentials: HTTPBasicCredentials | None = Depends(_basic_auth),
     admin_credentials: HTTPBasicCredentials | None = Depends(_admin_basic_auth),
 ) -> str:
     """
-    Library access shape:
+    Library + people access shape:
       - local mode: pass.
-      - kid mode: parent-admin only (kid doesn't manage library).
-      - adult mode: regular adult auth.
+      - kid mode: parent-admin basic auth (kid doesn't see /library or /people).
+      - adult mode: same cookie auth as the rest of the user surface.
     """
     cfg = state.cfg
     if cfg.is_local:
@@ -2436,13 +2438,15 @@ def require_library_access(
             detail="library is parent-admin only in kid mode",
             headers={"WWW-Authenticate": 'Basic realm="claudia-admin"'},
         )
-    if credentials is None or not _check_basic_credentials(credentials):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Unauthorized",
-            headers={"WWW-Authenticate": 'Basic realm="claudia"'},
-        )
-    return credentials.username
+    # Adult mode: cookie auth (the v0.7.1 refactor; no more HTTP Basic).
+    display = _adult_cookie_display_name(request)
+    if display is not None:
+        return display
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="adult-not-logged-in",
+        headers={"Location": "/login"},
+    )
 
 
 @app.get("/library", response_class=HTMLResponse)
