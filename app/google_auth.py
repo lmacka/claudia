@@ -1,13 +1,22 @@
 """
 Google OAuth 2.0 Authorization Code + PKCE flow.
 
-Scopes (from ARCHITECTURE.md § 6.2):
-  - https://www.googleapis.com/auth/gmail.readonly
-  - https://www.googleapis.com/auth/gmail.compose  (drafts only — app never sends)
-  - https://www.googleapis.com/auth/calendar.events
+Two scope sets:
+
+  IDENTITY_SCOPES — sign-in only. Used during /setup/2 when the user picks
+    "Sign in with Google" and during /login subsequently. Yields an ID
+    token from which we extract email + name; bound one-shot via
+    KV_GOOGLE_IDENTITY_EMAIL.
+
+  TOOL_SCOPES — Gmail read + compose-drafts + Calendar events. Requested
+    only when the user has enabled Google integration in /settings (or
+    step 3 of the wizard). Identity scopes are unioned in too so the
+    identity flow keeps working off the same token.
 
 Token is stored on NFS at /data/.credentials/google_oauth_token.json (0600).
 Refreshes happen transparently via google-auth.
+
+v0.8 phase C per /home/liamm/.claude/plans/ok-but-first-inspect-crystalline-seal.md.
 """
 
 from __future__ import annotations
@@ -25,11 +34,22 @@ from google_auth_oauthlib.flow import Flow
 
 log = structlog.get_logger()
 
-SCOPES = [
+IDENTITY_SCOPES = [
+    "openid",
+    "https://www.googleapis.com/auth/userinfo.email",
+    "https://www.googleapis.com/auth/userinfo.profile",
+]
+
+TOOL_SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/gmail.compose",
     "https://www.googleapis.com/auth/calendar.events",
 ]
+
+# Back-compat alias — `SCOPES` historically meant "all the tool scopes".
+# Anything that imports SCOPES gets the tool list; identity callers must
+# request IDENTITY_SCOPES (or the union) explicitly.
+SCOPES = TOOL_SCOPES
 
 
 @dataclass
@@ -65,13 +85,28 @@ def _client_config(cfg: GoogleAuthConfig) -> dict:
 # ---------------------------------------------------------------------------
 
 
-_pending: dict[str, str] = {}  # state_token -> code_verifier
+# state_token -> {"verifier": str, "scopes": list[str], "purpose": str}
+# `purpose` is "identity" | "tools" | "both"; the callback uses it to
+# decide whether to issue a login cookie, register tools, or both.
+_pending: dict[str, dict] = {}
 
 
-def begin_flow(cfg: GoogleAuthConfig) -> tuple[str, str]:
-    """Returns (auth_url, state_token). Stashes the code_verifier for later exchange."""
+def begin_flow(
+    cfg: GoogleAuthConfig,
+    scopes: list[str] | None = None,
+    purpose: str = "tools",
+) -> tuple[str, str]:
+    """Returns (auth_url, state_token). Stashes verifier + scopes + purpose
+    so the callback can resume correctly.
+
+    `scopes` defaults to TOOL_SCOPES (back-compat with the v0.7 callers).
+    The wizard-side identity flow passes IDENTITY_SCOPES; the
+    /settings-side tool-enable flow passes TOOL_SCOPES + IDENTITY_SCOPES
+    (so the same token serves both).
+    """
+    requested_scopes = list(scopes) if scopes is not None else TOOL_SCOPES
     flow = Flow.from_client_config(
-        _client_config(cfg), scopes=SCOPES, redirect_uri=cfg.redirect_uri
+        _client_config(cfg), scopes=requested_scopes, redirect_uri=cfg.redirect_uri
     )
     state_token = secrets.token_urlsafe(24)
     auth_url, _ = flow.authorization_url(
@@ -80,20 +115,41 @@ def begin_flow(cfg: GoogleAuthConfig) -> tuple[str, str]:
         prompt="consent",
         state=state_token,
     )
-    # flow.code_verifier is populated by authorization_url() when PKCE is active.
-    _pending[state_token] = getattr(flow, "code_verifier", "") or ""
+    _pending[state_token] = {
+        "verifier": getattr(flow, "code_verifier", "") or "",
+        "scopes": requested_scopes,
+        "purpose": purpose,
+    }
     return auth_url, state_token
+
+
+@dataclass
+class ExchangeResult:
+    """What the callback gets back from a successful exchange."""
+
+    credentials: Credentials
+    purpose: str  # "identity" | "tools" | "both"
+    identity_email: str | None  # populated when openid scope was granted
+    identity_name: str | None
 
 
 def exchange_code(
     cfg: GoogleAuthConfig, code: str, returned_state: str
-) -> Credentials:
-    if returned_state not in _pending:
+) -> ExchangeResult:
+    """Swap the auth code for tokens. If identity scopes were requested,
+    decode the ID token and return the email + name alongside the
+    credentials. Caller (the /oauth/callback handler) decides whether to
+    issue a login cookie based on the recorded purpose."""
+    pending = _pending.pop(returned_state, None)
+    if pending is None:
         raise ValueError("invalid or expired state token")
-    code_verifier = _pending.pop(returned_state)
+    code_verifier = pending["verifier"]
+    requested_scopes = pending["scopes"]
+    purpose = pending.get("purpose", "tools")
+
     flow = Flow.from_client_config(
         _client_config(cfg),
-        scopes=SCOPES,
+        scopes=requested_scopes,
         redirect_uri=cfg.redirect_uri,
         state=returned_state,
     )
@@ -103,7 +159,37 @@ def exchange_code(
     flow.fetch_token(code=code)
     creds = flow.credentials
     _persist(cfg.token_path, creds)
-    return creds
+
+    identity_email: str | None = None
+    identity_name: str | None = None
+    if "openid" in requested_scopes:
+        identity_email, identity_name = _decode_id_token(creds, cfg.client_id)
+
+    return ExchangeResult(
+        credentials=creds,
+        purpose=purpose,
+        identity_email=identity_email,
+        identity_name=identity_name,
+    )
+
+
+def _decode_id_token(creds: Credentials, client_id: str) -> tuple[str | None, str | None]:
+    """Verify + decode the ID token attached to the credentials. Returns
+    (email, name) on success, (None, None) on any failure — the caller
+    should treat absence as 'identity not bound'."""
+    id_token_value = getattr(creds, "id_token", None)
+    if not id_token_value:
+        return (None, None)
+    try:
+        from google.oauth2 import id_token as google_id_token
+
+        info = google_id_token.verify_oauth2_token(
+            id_token_value, GoogleRequest(), client_id
+        )
+        return (info.get("email"), info.get("name"))
+    except Exception as e:  # noqa: BLE001
+        log.warning("google_auth.id_token_decode_failed", error=str(e))
+        return (None, None)
 
 
 def _persist(token_path: Path, creds: Credentials) -> None:

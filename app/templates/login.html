@@ -42,4 +42,14 @@
   </fieldset>
 </form>
 
+{% if role == "adult" and not is_first_time and google_identity_email %}
+<p class="muted" style="text-align: center; margin: 16px 0;">— or —</p>
+<form method="post" action="/auth/google/start" style="text-align: center;">
+  <button type="submit" class="outline">Sign in with Google ({{ google_identity_email }})</button>
+</form>
+<small class="muted" style="display: block; text-align: center; margin-top: 4px;">
+  This deploy is bound to {{ google_identity_email }}.
+</small>
+{% endif %}
+
 {% endblock %}

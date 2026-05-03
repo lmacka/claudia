@@ -632,6 +632,15 @@ async def login_page(request: Request) -> HTMLResponse:
     if role == "adult" and is_first_time:
         return RedirectResponse(url="/setup/1", status_code=303)
 
+    # Show "Sign in with Google" option only when:
+    #   - adult mode
+    #   - Google credentials are configured (env or kv)
+    #   - an identity email has already been bound (one-shot lock per
+    #     decision 9 — first identity to complete setup owns the deploy)
+    google_identity_email: str | None = None
+    if role == "adult" and _google_creds_present(cfg):
+        google_identity_email = _google_identity_bound_email(cfg)
+
     return state.templates.TemplateResponse(
         request,
         "login.html",
@@ -639,6 +648,7 @@ async def login_page(request: Request) -> HTMLResponse:
             "role": role,
             "is_first_time": is_first_time,
             "display_name": cfg.display_name,
+            "google_identity_email": google_identity_email,
         },
     )
 
@@ -2123,8 +2133,27 @@ def _md_blocks(text: str):
 # ---------------------------------------------------------------------------
 
 
+def _google_creds_present(cfg: config_module.Config) -> bool:
+    """True iff client_id + client_secret are available (env or kv).
+    Identity flow can run even when /settings tools toggle is off,
+    as long as credentials are configured."""
+    cid, secret, _redirect = runtime_config_mod.get_google_creds(cfg.data_root)
+    return bool(cid and secret) and cfg.is_adult
+
+
+def _google_identity_bound_email(cfg: config_module.Config) -> str | None:
+    """The one-shot-locked email from runtime_config.
+    Returns None if no identity has been bound yet."""
+    from app.db_kv import kv_get
+
+    return kv_get(cfg.data_root, runtime_config_mod.KV_GOOGLE_IDENTITY_EMAIL) or None
+
+
 @app.get("/connect-gmail", response_class=HTMLResponse)
 async def connect_gmail(request: Request, _: str = Depends(require_auth)) -> HTMLResponse:
+    """Tool-side OAuth entrypoint. Adult-mode + Google-tools-enabled only.
+    Requests identity scopes alongside tool scopes so the same token serves
+    both purposes (decision 1 of v0.8 plan)."""
     if not _google_enabled(state.cfg):
         raise HTTPException(status_code=404, detail="Google integrations not enabled")
     gcfg = _google_cfg(state.cfg)
@@ -2137,7 +2166,12 @@ async def connect_gmail(request: Request, _: str = Depends(require_auth)) -> HTM
         return state.templates.TemplateResponse(
             request, "connect_gmail.html", {"variant": "connected", "scopes": stat.get("scopes", [])}
         )
-    auth_url, _s = google_auth.begin_flow(gcfg)
+    # Request both scope sets so the resulting token covers identity AND tools.
+    auth_url, _s = google_auth.begin_flow(
+        gcfg,
+        scopes=google_auth.IDENTITY_SCOPES + google_auth.TOOL_SCOPES,
+        purpose="both",
+    )
     return state.templates.TemplateResponse(
         request, "connect_gmail.html", {"variant": "connect", "auth_url": auth_url}
     )
@@ -2151,10 +2185,51 @@ async def connect_gmail_disconnect(_: str = Depends(require_auth)) -> RedirectRe
     return RedirectResponse("/", status_code=303)
 
 
+@app.post("/auth/google/start")
+async def auth_google_start(request: Request) -> Response:
+    """Identity-only OAuth entrypoint. Used by /setup/2 and /login when the
+    user picks 'Sign in with Google'. Adult-mode only.
+
+    Unauthenticated by design — the user is mid-login. The identity binding
+    (one-shot lock per decision 9) is enforced in the callback.
+    """
+    cfg = state.cfg
+    if not cfg.is_adult:
+        raise HTTPException(status_code=404, detail="Google sign-in is adult-mode only")
+    if cfg.is_local:
+        raise HTTPException(status_code=404, detail="Google sign-in unavailable in local mode")
+    if not _google_creds_present(cfg):
+        raise HTTPException(
+            status_code=400,
+            detail="Google OAuth credentials are not configured. Complete /setup/2 with the password path or add credentials in /settings.",
+        )
+    gcfg = _google_cfg(cfg)
+    auth_url, _s = google_auth.begin_flow(
+        gcfg,
+        scopes=google_auth.IDENTITY_SCOPES,
+        purpose="identity",
+    )
+    return RedirectResponse(url=auth_url, status_code=303)
+
+
 @app.get("/oauth/callback")
-async def oauth_callback(request: Request, _: str = Depends(require_auth)) -> HTMLResponse:
-    if not _google_enabled(state.cfg):
-        raise HTTPException(status_code=404, detail="Google integrations not enabled")
+async def oauth_callback(request: Request) -> Response:
+    """Handles BOTH identity and tool callbacks.
+
+    Branches on the `purpose` recorded by begin_flow at the matching state
+    token. Identity callbacks bind the email one-shot (decision 9) and
+    issue an adult login cookie. Tool callbacks just persist the token and
+    show the success template. Both-purpose callbacks do both.
+
+    Unauthenticated for identity flows (the user is mid-login). Tool flows
+    are reachable only when the user is already logged in, so no extra
+    auth check is needed here — the OAuth state token is the binding."""
+    cfg = state.cfg
+    if not cfg.is_adult:
+        raise HTTPException(status_code=404, detail="Google integrations are adult-mode only")
+    if not _google_creds_present(cfg):
+        raise HTTPException(status_code=400, detail="Google credentials missing")
+
     code = request.query_params.get("code")
     returned_state = request.query_params.get("state")
     error = request.query_params.get("error")
@@ -2169,14 +2244,54 @@ async def oauth_callback(request: Request, _: str = Depends(require_auth)) -> HT
             {"variant": "callback_error", "error": "Missing code or state"},
             status_code=400,
         )
-    gcfg = _google_cfg(state.cfg)
+    gcfg = _google_cfg(cfg)
     try:
-        google_auth.exchange_code(gcfg, code, returned_state)
+        result = google_auth.exchange_code(gcfg, code, returned_state)
     except Exception as e:  # noqa: BLE001
         log.exception("oauth.exchange_failed")
         return state.templates.TemplateResponse(
             request, "connect_gmail.html", {"variant": "callback_error", "error": str(e)}, status_code=500
         )
+
+    # Identity branch: bind the email if not yet bound; reject mismatch.
+    issued_login = False
+    if result.purpose in ("identity", "both") and result.identity_email:
+        from app.db_kv import kv_get, kv_set
+
+        bound = kv_get(cfg.data_root, runtime_config_mod.KV_GOOGLE_IDENTITY_EMAIL)
+        if not bound:
+            kv_set(cfg.data_root, runtime_config_mod.KV_GOOGLE_IDENTITY_EMAIL, result.identity_email)
+            log.info("oauth.identity_bound", email=result.identity_email)
+            issued_login = True
+        elif bound == result.identity_email:
+            issued_login = True
+        else:
+            log.warning(
+                "oauth.identity_mismatch",
+                bound_email=bound,
+                attempted_email=result.identity_email,
+            )
+            return state.templates.TemplateResponse(
+                request,
+                "connect_gmail.html",
+                {
+                    "variant": "callback_error",
+                    "error": (
+                        f"This deploy is bound to {bound}; can't sign in as "
+                        f"{result.identity_email}. To rebind, an operator must clear "
+                        "google_identity_email from the kv_store via kubectl exec."
+                    ),
+                },
+                status_code=403,
+            )
+
+    if issued_login:
+        # Identity flow lands the user back at /setup/3 (mid-wizard) or /
+        # (post-setup login). Use _setup_complete to decide.
+        target = "/" if _setup_complete() else "/setup/3"
+        return _issue_login_cookie("adult", redirect_to=target)
+
+    # Tool-only callback (the existing /connect-gmail flow path).
     return state.templates.TemplateResponse(request, "connect_gmail.html", {"variant": "callback_ok"})
 
 
