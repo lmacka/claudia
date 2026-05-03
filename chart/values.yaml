@@ -9,24 +9,33 @@ country: "AU"                 # affects timezone and crisis hotlines
 
 theme: sage                   # sage | blush | lavender | amber | contrast
 
-anthropicSecretRef:
-  name: anthropic-api-key
-  key: api-key
+# v0.8: credentials are captured in the in-app setup wizard (/setup/1 for
+# the Anthropic key, /setup/2 for the password). Helm Secrets are only
+# needed when you want to bootstrap from an externally-managed source
+# (SOPS, Vault, etc) — leave the blocks below commented out for a
+# normal install. When set, env-mounted values WIN over /settings edits
+# (decision 8) so the UI fields render read-only.
+
+# anthropicSecretRef:        # OPTIONAL — set if you want the API key from a Helm Secret
+#   name: anthropic-api-key
+#   key: api-key
 
 # adult-mode-only block. Ignored when mode=kid.
 adult:
   integrations:
     google:                   # Gmail + Google Calendar tools.
       enabled: false          # opt-in; default off. Kid mode never honours this.
-      secretRef:              # only consulted when enabled=true
-        name: google-oauth
-        clientIdKey: client-id
-        clientSecretKey: client-secret
+      # secretRef:            # OPTIONAL — credentials come from /settings if not set here
+      #   name: google-oauth
+      #   clientIdKey: client-id
+      #   clientSecretKey: client-secret
 
-basicAuth:
-  passwordSecretRef:
-    name: claudia-auth
-    key: password             # adult: chat password; kid: parent-admin password
+# basicAuth — REQUIRED in kid mode (parent-admin password for /admin/*).
+# OPTIONAL in adult mode: the user picks their password in /setup/2.
+# basicAuth:
+#   passwordSecretRef:
+#     name: claudia-auth
+#     key: password
 
 # kid-mode-only block — ignored when mode=adult
 kid:

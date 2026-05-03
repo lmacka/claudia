@@ -13,23 +13,20 @@
 > tools disabled, no-anthropomorphism prompt, crisis-aware help routing)
 > IS enforced and IS non-disableable.
 
-Skeleton — `templates/` is empty. Fill in deployment.yaml, service.yaml,
-httproute.yaml (or ingress.yaml), pvc.yaml as part of v1 build step 1.
-
 See `../docs/design.md` "Helm chart values" section for the canonical
 values reference.
 
-## Install (once templates are filled)
+## Install (adult mode, v0.8+)
 
 ```bash
 helm install claudia oci://ghcr.io/lmacka/charts/claudia \
-  --version 0.1.0 \
-  --values my-values.yaml \
+  --version 0.8.0 \
+  --values examples/adult-values.yaml \
   --namespace claudia \
   --create-namespace
 ```
 
-`my-values.yaml` minimum:
+Minimum values:
 
 ```yaml
 mode: adult
@@ -41,12 +38,52 @@ ingress:
     secretName: claudia-tls
 ```
 
-Required secrets in the namespace before install:
+**No Secrets need to exist before install.** v0.8 captures all credentials
+in the in-app `/setup` wizard the first time you open the URL:
 
-- `anthropic-api-key` with key `api-key`
-- `claudia-auth` with key `password`
-- `google-oauth` with keys `client-id`, `client-secret` (only if
-  `adult.integrations.google.enabled: true` — adult mode only)
+- Step 1: Anthropic API key (live-validated)
+- Step 2: Pick a password (or sign in with Google)
+- Step 3: Profile + model + custom instructions
+- Step 4: Library import + auto-draft profile
+- Step 5: Theme + therapist alias → finish
+
+Anything you set lands in SQLite at `/data/claudia.db` on the PVC.
+
+### Optional pre-bootstrap (SOPS / Vault)
+
+If you want to manage credentials externally instead of via the wizard,
+add either or both of these blocks:
+
+```yaml
+anthropicSecretRef:
+  name: anthropic-api-key
+  key: api-key
+basicAuth:
+  passwordSecretRef:
+    name: claudia-auth
+    key: password
+```
+
+Env-mounted Secret values **always win** over `/settings` edits — the UI
+fields render read-only with a tooltip ("set by Helm Secret — edit chart
+to change"). To rotate, edit the Secret and bounce the pod, or remove the
+ref from the chart and use the wizard.
+
+## Install (kid mode)
+
+Kid mode is operator-managed (parent ssh + Helm); the kid never sees the
+setup wizard. Pre-create both Secrets:
+
+```bash
+kubectl create secret generic anthropic-api-key \
+  --from-literal=api-key=sk-ant-...
+kubectl create secret generic claudia-jasper-auth \
+  --from-literal=password='your-parent-admin-password'
+```
+
+Use `examples/kid-values.yaml` (which references both secrets). The chart
+schema requires `basicAuth` when `mode: kid` — the parent admin password
+is non-optional in kid mode.
 
 ## Schema enforcement
 

@@ -140,12 +140,13 @@
         "properties": { "mode": { "const": "kid" } }
       },
       "then": {
-        "required": ["kid"],
+        "required": ["kid", "basicAuth"],
         "properties": {
           "kid": {
             "required": ["safety", "encryption"]
           }
-        }
+        },
+        "description": "Kid mode requires basicAuth (parent-admin password) at install time. Adult mode collects credentials in /setup/2 instead — basicAuth is optional there."
       }
     }
   ]

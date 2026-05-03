@@ -1,4 +1,9 @@
-# Example values for a kid-mode claudia deploy.
+# Example values for a kid-mode claudia deploy (v0.8+).
+#
+# Kid mode is operator-managed (parent ssh + Helm). Unlike adult mode,
+# the credentials DO need to be pre-created as Helm Secrets — the kid
+# user has no admin access, and the parent uses /admin (basic auth,
+# parent-only) to manage profile/library/people/etc.
 #
 # v1 DEV MODE: NO at-rest encryption. Sessions are stored as plaintext
 # JSONL on the PVC. Anyone with `kubectl exec` access to the pod can
@@ -7,9 +12,7 @@
 #
 # The classifier (runtime) and no-anthropomorphism (prompt) floor IS
 # enforced. Gmail+Calendar tools are gated at the registry — kid mode
-# never registers them, regardless of any config. encryption.enabled is
-# a default-true flag the app currently ignores; it will be re-pinned
-# to const: true at v1.5 via schema migration.
+# never registers them, regardless of any config.
 #
 # Pre-requisites:
 #   1. A Kubernetes cluster with an Ingress controller.
@@ -17,12 +20,13 @@
 #        kubectl create secret generic anthropic-api-key --from-literal=api-key=sk-ant-...
 #        kubectl create secret generic claudia-jasper-auth --from-literal=password='parent-admin-password'
 #
-#   IMPORTANT: This is the parent-admin password (used to log into /admin).
-#   The kid sets their own passphrase at first login.
+#   IMPORTANT: claudia-jasper-auth is the PARENT-ADMIN password (used to log
+#   into /admin/*). The kid sets their own separate passphrase at first
+#   /login.
 #
 # Then:
 #   helm install claudia-jasper oci://ghcr.io/lmacka/claudia \
-#     --version 0.1.0 \
+#     --version 0.8.0 \
 #     --values examples/kid-values.yaml \
 #     --namespace claudia-jasper --create-namespace
 #
@@ -51,7 +55,7 @@ basicAuth:
 # would never register. See app/main.py:_google_enabled.
 
 kid:
-  parentDisplayName: "your parent"  # default; parent overrides this in /setup/1 (kid mode) or /settings — persists to /data/parent_display_name.txt
+  parentDisplayName: "your parent"  # default; parent overrides this in /setup/3 (kid mode) or /settings — persists to /data/parent_display_name.txt via kv_store
   safety:
     haiku_classifier: true          # NON-DISABLEABLE
     no_anthropomorphism: true       # NON-DISABLEABLE

@@ -73,17 +73,35 @@ spec:
             - name: CLAUDIA_ADULT_INTEGRATIONS_GOOGLE_ENABLED
               value: {{ ((.Values.adult).integrations).google.enabled | default false | quote }}
             {{- end }}
+            {{- /* v0.8: secret-mounted credentials are now optional. The
+                in-app /setup wizard captures credentials when these blocks
+                are absent. Env-mounted values stay authoritative when
+                present (decision 8). */}}
+            {{- if .Values.anthropicSecretRef }}
             - name: ANTHROPIC_API_KEY
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.anthropicSecretRef.name }}
                   key: {{ .Values.anthropicSecretRef.key }}
+            {{- end }}
+            {{- if and (eq .Values.mode "kid") .Values.basicAuth }}
             - name: BASIC_AUTH_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.basicAuth.passwordSecretRef.name }}
                   key: {{ .Values.basicAuth.passwordSecretRef.key }}
-            {{- if and (eq .Values.mode "adult") (((.Values.adult).integrations).google).enabled }}
+            {{- end }}
+            {{- /* Adult mode: only mount basicAuth Secret if the operator
+                explicitly set it. Otherwise the user picks their password
+                in /setup/2 and it's stored in kv_store on the PVC. */}}
+            {{- if and (eq .Values.mode "adult") .Values.basicAuth (.Values.basicAuth).passwordSecretRef }}
+            - name: BASIC_AUTH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.basicAuth.passwordSecretRef.name }}
+                  key: {{ .Values.basicAuth.passwordSecretRef.key }}
+            {{- end }}
+            {{- if and (eq .Values.mode "adult") (((.Values.adult).integrations).google).enabled (((.Values.adult).integrations).google).secretRef }}
             - name: GOOGLE_OAUTH_CLIENT_ID
               valueFrom:
                 secretKeyRef:

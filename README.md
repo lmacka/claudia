@@ -46,31 +46,44 @@ The Helm chart is the shipping unit.
 
 ## Quickstart
 
-### Adult mode
+### Adult mode (v0.8+)
+
+**No Secrets need to exist before install.** All credentials are captured
+in the in-app `/setup` wizard the first time you open the URL.
 
 ```bash
-# 1. Pick a namespace and create the API + auth secrets.
+# 1. Pick a namespace.
 kubectl create namespace claudia
-kubectl -n claudia create secret generic anthropic-api-key \
-    --from-literal=api-key=sk-ant-...
-kubectl -n claudia create secret generic claudia-auth \
-    --from-literal=password='a-strong-password'
 
 # 2. Copy and edit the example values file.
 cp examples/adult-values.yaml my-values.yaml
-# Edit displayName, ingress.host, ingress.tls.secretName.
+# Edit displayName, dob, ingress.host, ingress.tls.secretName.
 
 # 3. Install.
 helm install claudia oci://ghcr.io/lmacka/charts/claudia \
-    --version 0.5.2 \
+    --version 0.8.0 \
     --namespace claudia \
     --values my-values.yaml
 
-# 4. Browse to https://your-host/. HTTP basic auth: liam / your password.
-#    First visit redirects to /setup/1 — three quick stages and you're in.
+# 4. Browse to https://your-host/. The first-run gate redirects to /setup,
+#    which walks you through five stages:
+#      Step 1: Anthropic API key (live-validated)
+#      Step 2: Pick a password (or sign in with Google if creds are wired)
+#      Step 3: Profile + model + custom instructions
+#      Step 4: Library import (drop in PDFs, journals, etc) + auto-draft profile
+#      Step 5: Theme + therapist alias → finish
 ```
 
+If you want to pre-bootstrap the Anthropic key from a Helm Secret instead
+of typing it in the wizard (e.g. SOPS-managed), uncomment the
+`anthropicSecretRef` block in your values file. Env-mounted Secret values
+always win over `/settings` edits.
+
 ### Kid mode
+
+Kid mode is operator-managed (parent ssh + Helm). The kid never sees the
+setup wizard — the parent runs it via `/admin`. Secrets are still
+required pre-install:
 
 ```bash
 # 1. Namespace per kid. (The chart is single-tenant — one release per kid.)
@@ -86,14 +99,13 @@ kubectl -n claudia-jasper create secret generic claudia-jasper-auth \
 
 # 3. Install.
 helm install claudia-jasper oci://ghcr.io/lmacka/charts/claudia \
-    --version 0.5.2 \
+    --version 0.8.0 \
     --namespace claudia-jasper \
     --values my-values.yaml
 
-# 4. Parent visits https://your-host/admin (basic auth: liam / the parent
-#    password from step 1) and walks the 3-stage setup wizard. Profile,
-#    library docs, people. Then hand the URL to the kid — they hit / ,
-#    set their own passphrase, and start chatting.
+# 4. Parent visits https://your-host/admin and walks the 5-stage setup
+#    wizard (same as adult mode, but profile fields target the kid).
+#    Then hand the URL to the kid — they hit / and set their own passphrase.
 ```
 
 ## First-deploy walkthrough
@@ -118,23 +130,27 @@ mode. Adult is a subset (skip the kid handoff steps).
 
 5. **Visit `/admin`** (kid mode). HTTP basic auth challenge — username
    is `liam` (or whatever you set as `basicAuth.user`), password is the
-   one from step 1. The first-run gate redirects to `/setup/1`.
+   one from step 1. The first-run gate redirects to `/setup`.
 
-6. **Walk the 3-stage setup wizard.**
-   - **Stage 1 — basics.** Display name comes from your Helm values
-     (not editable here). Set the kid's preferred name, DOB, country,
-     region.
-   - **Stage 2 — context.** Drop documents into `/library` (PDFs,
+6. **Walk the 5-stage setup wizard.**
+   - **Step 1 — Anthropic API key.** Paste your key; it's validated with
+     a 1-token test call before being persisted to kv_store.
+   - **Step 2 — Auth method.** Pick a password OR sign in with Google
+     (if Google OAuth credentials are configured).
+   - **Step 3 — Profile + model + instructions + (kid-name in kid mode).**
+     Display name comes from Helm (not editable here). Set preferred
+     name, DOB, country, region, model (Sonnet/Opus/Haiku), and any
+     additional instructions you want appended to the system prompt.
+   - **Step 4 — Library import.** Drop documents inline (PDFs,
      screenshots, chat exports, school reports, journals, IEP/EHCP/NDIS
      plans, psych assessments). Each file is extracted in a streamed
-     pipeline — PDF text, DOCX, image OCR via Claude vision. You can
-     review extracted text in the library detail row before claudia
-     ever reads it. Then fill the four profile textareas: who they
-     are, what they're navigating, what claudia should never do, what
-     claudia is for in their life. These compose `01_background.md`
-     in the context pack.
-   - **Stage 3 — recap.** Sanity check + "done — show me the parent
-     dashboard."
+     pipeline — PDF text, DOCX, image OCR via Claude vision. The
+     "auto-draft profile" button reads everything you've uploaded and
+     pre-fills the four profile textareas (who you are, active stressors,
+     what claudia should never do, what claudia is for). These compose
+     `01_background.md` in the context pack.
+   - **Step 5 — Recap + theme + therapist alias.** Sanity check, pick a
+     colour scheme, optionally rename the bot, finish.
 
 7. **Add people.** `/people` lets you seed the social map up front
    (co-parents, friends, teachers, professionals). claudia also asks
