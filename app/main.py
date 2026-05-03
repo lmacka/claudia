@@ -60,11 +60,11 @@ from app.people import People
 from app.storage import (
     InMemorySessionStore,
     Message,
-    NFSSessionStore,
     SessionHeader,
     SessionStore,
     new_session_id,
 )
+from app.storage_sqlite import SqliteSessionStore
 from app.tools import ToolRegistry
 from app.tools.calendar import (
     create_calendar_event_spec,
@@ -291,7 +291,12 @@ async def lifespan(app: FastAPI):
     for sub in ("sessions", "session-logs", "uploads", "context", "session-exports", "library", "people", ".locks"):
         (cfg.data_root / sub).mkdir(parents=True, exist_ok=True)
 
-    state.store = InMemorySessionStore() if cfg.is_local else NFSSessionStore(cfg.data_root)
+    # Storage selection (T-NEW-I phase 1):
+    # - local mode: InMemorySessionStore (tests + uvicorn-on-laptop)
+    # - dev/prod:   SqliteSessionStore (replaces NFSSessionStore JSONL — clean
+    #               rebuild, no JSONL import. Existing JSONL files on disk are
+    #               left untouched but no longer read by the app.)
+    state.store = InMemorySessionStore() if cfg.is_local else SqliteSessionStore(cfg.data_root)
     # ContextLoader's people_md_provider is wired below once state.people is
     # constructed; until then it returns "".
     state.loader = ContextLoader(
@@ -1435,23 +1440,9 @@ def _append_mood(data_root: Path, session_id: str, regulation_score: int, ts: st
 
 
 def _event_present(session_id: str, event_type: str) -> bool:
-    if isinstance(state.store, NFSSessionStore):
-        path = state.store.sessions_dir / f"{session_id}.jsonl"
-        if not path.exists():
-            return False
-        for line in path.read_text(encoding="utf-8").splitlines():
-            try:
-                rec = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if rec.get("type") == "event" and rec.get("event_type") == event_type:
-                return True
-        return False
-    if hasattr(state.store, "_events"):
-        for kind, _payload in state.store._events.get(session_id, []):  # type: ignore[attr-defined]
-            if kind == event_type:
-                return True
-    return False
+    """Encapsulates store-specific lookup. SessionStore.has_event is the
+    Protocol method; this wrapper exists so callers don't import the store types."""
+    return state.store.has_event(session_id, event_type)
 
 
 async def _run_audit_and_apply_async(session_id: str) -> None:

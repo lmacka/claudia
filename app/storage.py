@@ -86,6 +86,7 @@ class SessionStore(Protocol):
     def load_messages(self, session_id: str) -> list[Message]: ...
     def list_sessions(self) -> list[SessionMeta]: ...
     def active_session(self) -> SessionMeta | None: ...
+    def has_event(self, session_id: str, event_type: str) -> bool: ...
 
 
 # ---------------------------------------------------------------------------
@@ -258,6 +259,20 @@ class NFSSessionStore:
                 return meta
         return None
 
+    def has_event(self, session_id: str, event_type: str) -> bool:
+        path = self._session_path(session_id)
+        if not path.exists():
+            return False
+        with path.open("r", encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if record.get("type") == "event" and record.get("event_type") == event_type:
+                    return True
+        return False
+
 
 # ---------------------------------------------------------------------------
 # In-memory implementation (tests + --local)
@@ -322,6 +337,9 @@ class InMemorySessionStore:
             if meta.status == "active":
                 return meta
         return None
+
+    def has_event(self, session_id: str, event_type: str) -> bool:
+        return any(kind == event_type for kind, _payload in self._events.get(session_id, []))
 
 
 # ---------------------------------------------------------------------------

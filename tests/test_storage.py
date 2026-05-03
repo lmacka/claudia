@@ -1,4 +1,4 @@
-"""Storage layer — NFSSessionStore JSONL + InMemorySessionStore."""
+"""Storage layer — NFSSessionStore JSONL + InMemorySessionStore + SqliteSessionStore."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from app.storage import (
     SessionHeader,
     new_session_id,
 )
+from app.storage_sqlite import SqliteSessionStore
 
 
 @pytest.fixture
@@ -25,7 +26,12 @@ def mem_store() -> InMemorySessionStore:
     return InMemorySessionStore()
 
 
-STORES = ["nfs_store", "mem_store"]
+@pytest.fixture
+def sqlite_store(tmp_path: Path) -> SqliteSessionStore:
+    return SqliteSessionStore(tmp_path)
+
+
+STORES = ["nfs_store", "mem_store", "sqlite_store"]
 
 
 def _header(session_id: str) -> SessionHeader:
@@ -123,3 +129,66 @@ def test_nfs_store_append_is_true_append(tmp_path: Path):
     assert size_after_append > size_after_create
     # Must still have the original header line.
     assert size_after_append - size_after_create > 10
+
+
+# ---------------------------------------------------------------------------
+# SqliteSessionStore-specific
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("store_name", STORES)
+def test_has_event(request, store_name):
+    store = request.getfixturevalue(store_name)
+    sid = new_session_id("vent")
+    store.create_session(_header(sid))
+    assert store.has_event(sid, "audit_applied") is False
+    store.append_event(sid, "audit_scheduled", {})
+    store.append_event(sid, "audit_applied", {})
+    assert store.has_event(sid, "audit_scheduled") is True
+    assert store.has_event(sid, "audit_applied") is True
+    assert store.has_event(sid, "nope") is False
+
+
+def test_sqlite_persists_across_instances(tmp_path: Path):
+    store1 = SqliteSessionStore(tmp_path)
+    sid = new_session_id("vent")
+    store1.create_session(_header(sid))
+    store1.append_message(sid, Message(role="user", content="persisted"))
+    store1.append_event(sid, "audit_applied", {"score": 9})
+
+    store2 = SqliteSessionStore(tmp_path)
+    h = store2.load_header(sid)
+    assert h.session_id == sid
+    msgs = store2.load_messages(sid)
+    assert msgs[0].content == "persisted"
+    assert store2.has_event(sid, "audit_applied") is True
+
+
+def test_sqlite_creates_db_file(tmp_path: Path):
+    """The .db file is created on first construction."""
+    SqliteSessionStore(tmp_path)
+    assert (tmp_path / "claudia.db").exists()
+
+
+def test_sqlite_load_messages_unknown_session_raises(tmp_path: Path):
+    store = SqliteSessionStore(tmp_path)
+    with pytest.raises(FileNotFoundError):
+        store.load_messages("does-not-exist")
+
+
+def test_sqlite_update_header_unknown_column_rejected(tmp_path: Path):
+    store = SqliteSessionStore(tmp_path)
+    sid = new_session_id("vent")
+    store.create_session(_header(sid))
+    with pytest.raises(ValueError, match="unknown header column"):
+        store.update_header(sid, made_up_field="x")
+
+
+def test_sqlite_messages_preserve_insert_order(tmp_path: Path):
+    store = SqliteSessionStore(tmp_path)
+    sid = new_session_id("vent")
+    store.create_session(_header(sid))
+    for i in range(10):
+        store.append_message(sid, Message(role="user", content=f"msg-{i}"))
+    msgs = store.load_messages(sid)
+    assert [m.content for m in msgs] == [f"msg-{i}" for i in range(10)]
