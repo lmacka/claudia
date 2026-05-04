@@ -45,6 +45,7 @@ class ContextLoader:
         people_md_provider=None,
         additional_instructions_provider=None,
         library_index_provider=None,
+        same_day_transcripts_provider=None,
     ) -> None:
         self.data_root = data_root
         self.prompts_dir = prompts_dir
@@ -69,6 +70,11 @@ class ContextLoader:
         # Wired to Library.render_index_md(). Used by Block 2 instead of
         # the legacy on-disk INDEX.md (which nothing writes anymore).
         self._library_index_provider = library_index_provider
+        # Callable[[], str] returning recent same-day transcripts (markdown).
+        # Wired to a SqliteSessionStore-backed helper. Used by Block 3
+        # instead of the legacy data_root/sessions/*.jsonl glob (which is
+        # always empty since the SQLite migration).
+        self._same_day_transcripts_provider = same_day_transcripts_provider
 
     @property
     def kid_parent_display_name(self) -> str:
@@ -272,7 +278,17 @@ class ContextLoader:
         # Block 3 — volatile
         current_state = self._read(self.context_dir / "05_current_state.md").strip()
         session_log_tails = self._recent_session_logs(n=3, max_bytes_each=2048)
-        same_day = self._recent_same_day_transcripts()
+        same_day = ""
+        if self._same_day_transcripts_provider is not None:
+            try:
+                same_day = (self._same_day_transcripts_provider() or "").strip()
+            except Exception as e:  # noqa: BLE001
+                log.warning("context.same_day_provider_failed", error=str(e))
+        if not same_day:
+            # Legacy on-disk JSONL fallback for tests that don't wire the
+            # provider. Production deploys post-SQLite migration always have
+            # the provider set, so this returns "" there.
+            same_day = self._recent_same_day_transcripts()
         app_feedback = self._app_feedback_tail()
         now = datetime.now(TZ).strftime("%A %d %B %Y, %H:%M %Z")
         volatile_parts = [

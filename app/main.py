@@ -331,6 +331,7 @@ async def lifespan(app: FastAPI):
         people_md_provider=lambda: state.people.render_people_md() if hasattr(state, "people") else "",
         additional_instructions_provider=lambda: runtime_config_mod.get_additional_instructions(cfg.data_root),
         library_index_provider=lambda: state.library.render_index_md() if hasattr(state, "library") else "",
+        same_day_transcripts_provider=_recent_same_day_transcripts_from_store,
     )
     state.rate_limiter = auth_mod.IPRateLimiter()
     state.kid_session_store = auth_mod.SessionStore(cfg.data_root, role="kid")
@@ -1509,6 +1510,51 @@ def _mood_sparkline(data_root: Path) -> str | None:
     return "".join(glyphs[min(7, max(0, (s - 1) * 7 // 9))] for s in scores) + f"  ({scores[-1]}/10)"
 
 
+def _recent_same_day_transcripts_from_store(
+    window_hours: int = 8,
+    max_chars_each: int = 2500,
+    max_sessions: int = 6,
+) -> str:
+    """Pull the recent ended/active sessions in the last `window_hours` from
+    the SQLite session store and render them as the markdown block the
+    companion's prompt-block-3 expects.
+
+    Replaces the data_root/sessions/*.jsonl glob in ContextLoader, which is
+    always empty since the SQLite migration."""
+    if not hasattr(state, "store"):
+        return ""
+    cutoff = datetime.now(UTC) - timedelta(hours=window_hours)
+    parts: list[str] = []
+    for meta in state.store.list_sessions()[:max_sessions]:
+        try:
+            created = datetime.fromisoformat(meta.created_at.replace("Z", "+00:00"))
+        except (ValueError, AttributeError):
+            continue
+        if created < cutoff:
+            continue
+        try:
+            messages = state.store.load_messages(meta.session_id)
+        except (FileNotFoundError, ValueError):
+            continue
+        lines: list[str] = []
+        for m in messages:
+            if m.role not in ("user", "assistant"):
+                continue
+            content = (m.content or "").strip()
+            if not content:
+                continue
+            if (m.meta or {}).get("is_synthetic_opener"):
+                continue
+            lines.append(f"{m.role}: {content}")
+        if not lines:
+            continue
+        tail = "\n".join(lines)
+        if len(tail) > max_chars_each:
+            tail = "…\n" + tail[-max_chars_each:]
+        parts.append(f"### {meta.session_id}\n{tail}")
+    return "\n\n".join(parts)
+
+
 # ---------------------------------------------------------------------------
 # Sessions
 # ---------------------------------------------------------------------------
@@ -2078,7 +2124,7 @@ async def report_submit(request: Request, _: str = Depends(require_auth)) -> Res
     if end < start:
         raise HTTPException(400, "end_date must be on or after start_date")
 
-    bundle = _collect_for_report(state.cfg.data_root, start, end)
+    bundle = _collect_for_report(state.cfg.data_root, state.store, start, end)
     if not bundle["transcripts"]:
         raise HTTPException(404, "No sessions found in that date range")
 
@@ -2118,7 +2164,12 @@ def _write_last_export_ts(data_root: Path, ts: datetime) -> None:
     p.write_text(json.dumps({"ts": ts.isoformat()}), encoding="utf-8")
 
 
-def _collect_for_report(data_root: Path, start: date, end: date) -> dict:
+def _collect_for_report(
+    data_root: Path,
+    store: SessionStore,
+    start: date,
+    end: date,
+) -> dict:
     """Return a bundle of inputs for the handover call:
         transcripts, session_count, mood_entries, spine, session_logs
 
@@ -2130,71 +2181,59 @@ def _collect_for_report(data_root: Path, start: date, end: date) -> dict:
     in range — preferred over raw transcripts for narrative facts, and disambiguates
     referents the raw chat assumes both speakers share.
     """
-    sessions_dir = data_root / "sessions"
     transcripts_blocks: list[str] = []
     count = 0
-    if sessions_dir.exists():
-        for path in sorted(sessions_dir.glob("*.jsonl")):
-            if ".bak-" in path.name:
-                continue
-            try:
-                created: datetime | None = None
-                lines: list[str] = []
-                with path.open("r", encoding="utf-8") as fh:
-                    for raw in fh:
-                        try:
-                            rec = json.loads(raw)
-                        except json.JSONDecodeError:
-                            continue
-                        rtype = rec.get("type")
-                        if rtype == "header" and not created:
-                            ts = rec.get("created_at")
-                            if ts:
-                                try:
-                                    created = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-                                except ValueError:
-                                    created = None
-                        elif rtype == "message":
-                            role = rec.get("role")
-                            content = (rec.get("content") or "").strip()
-                            if role not in ("user", "assistant") or not content:
-                                continue
-                            meta = rec.get("meta") or {}
-                            if meta.get("is_synthetic_opener"):
-                                continue
-                            label = "LIAM" if role == "user" else "COMPANION"
-                            lines.append(f"{label}: {content}")
-                if created is None:
-                    continue
-                d = created.date()
-                if d < start or d > end:
-                    continue
-                count += 1
-                transcripts_blocks.append(
-                    f"## Session {path.stem} ({d.isoformat()})\n\n" + "\n\n".join(lines)
-                )
-            except OSError:
-                continue
-
-    # Mood entries in range
-    mood_entries: list[dict] = []
-    mood_path = data_root / "context" / "mood-log.jsonl"
-    if mood_path.exists():
+    for meta in store.list_sessions():
         try:
-            for line in mood_path.read_text(encoding="utf-8").splitlines():
-                try:
-                    rec = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                ts = rec.get("ts", "")
-                try:
-                    d = datetime.fromisoformat(ts.replace("Z", "+00:00")).date()
-                except ValueError:
-                    continue
-                if start <= d <= end:
-                    mood_entries.append(rec)
-        except OSError:
-            pass
+            created = datetime.fromisoformat(meta.created_at.replace("Z", "+00:00"))
+        except (ValueError, AttributeError):
+            continue
+        d = created.date()
+        if d < start or d > end:
+            continue
+        try:
+            messages = store.load_messages(meta.session_id)
+        except (FileNotFoundError, ValueError):
+            continue
+        lines: list[str] = []
+        for m in messages:
+            if m.role not in ("user", "assistant"):
+                continue
+            content = (m.content or "").strip()
+            if not content:
+                continue
+            if (m.meta or {}).get("is_synthetic_opener"):
+                continue
+            label = "LIAM" if m.role == "user" else "COMPANION"
+            lines.append(f"{label}: {content}")
+        if not lines:
+            continue
+        count += 1
+        transcripts_blocks.append(
+            f"## Session {meta.session_id} ({d.isoformat()})\n\n" + "\n\n".join(lines)
+        )
+
+    # Mood entries in range — read from the mood_log SQLite table. db.migrate
+    # is idempotent and ensures the table exists for fresh test data_roots.
+    mood_entries: list[dict] = []
+    from app import db as _db_mod
+
+    _db_mod.migrate(data_root)
+    with _db_mod.connect(data_root) as _db:
+        for row in _db.execute(
+            """SELECT session_id, ts, regulation_score
+               FROM mood_log
+               WHERE date(ts) BETWEEN ? AND ?
+               ORDER BY ts ASC""",
+            (start.isoformat(), end.isoformat()),
+        ):
+            mood_entries.append(
+                {
+                    "session_id": row["session_id"],
+                    "ts": row["ts"],
+                    "regulation_score": row["regulation_score"],
+                }
+            )
 
     # Factual spine — ground truth for who's who and what happened previously.
     ctx_dir = data_root / "context"

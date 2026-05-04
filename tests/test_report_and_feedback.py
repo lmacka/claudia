@@ -100,31 +100,28 @@ def test_report_form_renders_with_defaults(client: TestClient) -> None:
     assert "end_date" in body
 
 
-def _seed_session_jsonl(
+def _seed_session_in_store(
     data_root: Path,
     session_id: str,
     when: datetime,
     messages: list[tuple[str, str]],
-) -> None:
-    sessions_dir = data_root / "sessions"
-    sessions_dir.mkdir(parents=True, exist_ok=True)
-    path = sessions_dir / f"{session_id}.jsonl"
-    with path.open("w", encoding="utf-8") as fh:
-        fh.write(
-            json.dumps(
-                {
-                    "type": "header",
-                    "session_id": session_id,
-                    "created_at": when.isoformat(),
-                    "mode": "session",
-                    "model": "claude-sonnet-4-6",
-                    "prompt_sha": "",
-                }
-            )
-            + "\n"
+) -> SqliteSessionStore:
+    """Seed a session into the SQLite store with header + messages."""
+    from app.storage import Message
+
+    store = SqliteSessionStore(data_root)
+    store.create_session(
+        SessionHeader(
+            session_id=session_id,
+            created_at=when.isoformat(),
+            mode="session",
+            model="claude-sonnet-4-6",
+            prompt_sha="",
         )
-        for role, content in messages:
-            fh.write(json.dumps({"type": "message", "role": role, "content": content}) + "\n")
+    )
+    for role, content in messages:
+        store.append_message(session_id, Message(role=role, content=content))
+    return store
 
 
 def test_report_404_when_no_sessions_in_range(client: TestClient) -> None:
@@ -141,7 +138,7 @@ def test_report_generates_pdf_in_local_mode(client: TestClient) -> None:
     import app.main as main_module
 
     today = datetime.now(UTC)
-    _seed_session_jsonl(
+    _seed_session_in_store(
         main_module.state.cfg.data_root,
         f"{today.strftime('%Y-%m-%dT%H-%M-%SZ')}_session_aaaa",
         today,
@@ -194,15 +191,14 @@ def test_collect_for_report_includes_spine_and_session_logs(tmp_path: Path) -> N
     (tmp_path / "session-logs" / "2026-01-01_old.md").write_text(
         "out of range", encoding="utf-8"
     )
-    (tmp_path / "sessions").mkdir()
-    _seed_session_jsonl(
+    store = _seed_session_in_store(
         tmp_path,
         "2026-04-22T10-00-00Z_session_aaaa",
         datetime(2026, 4, 22, 10, 0, tzinfo=UTC),
         [("user", "rough day"), ("assistant", "what part?")],
     )
 
-    bundle = _collect_for_report(tmp_path, date(2026, 4, 20), date(2026, 4, 25))
+    bundle = _collect_for_report(tmp_path, store, date(2026, 4, 20), date(2026, 4, 25))
     assert bundle["session_count"] == 1
     assert "WhatsApp message to Rhi" in bundle["spine"]
     assert "Currently: tense" in bundle["spine"]
