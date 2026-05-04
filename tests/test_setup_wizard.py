@@ -55,38 +55,19 @@ def test_home_redirects_to_setup_when_marker_missing(
         assert r.headers["location"] == "/setup"
 
 
-def test_home_does_not_redirect_when_marker_present(
+def test_home_does_not_redirect_when_setup_completed_in_kv(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    (tmp_path / ".setup_complete").write_text("done\n", encoding="utf-8")
     main_module = _build_client(tmp_path, monkeypatch)
     with TestClient(main_module.app) as c:
+        from app.db_kv import kv_set
+
+        kv_set(tmp_path, main_module.KV_SETUP_COMPLETED, "2026-05-04T00:00:00+00:00")
         r = c.get("/", follow_redirects=False)
         assert r.status_code == 200
 
 
-# ---------------------------------------------------------------------------
-# Auto-mark on startup for existing deploys
-# ---------------------------------------------------------------------------
-
-
-def test_auto_mark_when_existing_session_log(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Pre-populate a session log so the lifespan auto-mark logic kicks in
-    (legacy-deploy migration path)."""
-    logs = tmp_path / "session-logs"
-    logs.mkdir(parents=True, exist_ok=True)
-    (logs / "2026-04-01_old-session.md").write_text("# Old\n\nbody\n", encoding="utf-8")
-
-    main_module = _build_client(tmp_path, monkeypatch)
-    with TestClient(main_module.app) as _:
-        from app.db_kv import kv_exists
-
-        assert kv_exists(tmp_path, main_module.KV_SETUP_COMPLETED)
-
-
-def test_auto_mark_does_not_fire_on_truly_fresh_deploy(
+def test_setup_completed_kv_key_absent_on_fresh_deploy(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     main_module = _build_client(tmp_path, monkeypatch)

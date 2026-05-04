@@ -28,7 +28,8 @@ def kid_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setenv("CLAUDIA_KID_PARENT_DISPLAY_NAME", "your parents")
     (tmp_path / "context").mkdir(parents=True, exist_ok=True)
     (tmp_path / "context" / "05_current_state.md").write_text("# stub\n", encoding="utf-8")
-    (tmp_path / ".setup_complete").write_text("test fixture\n", encoding="utf-8")
+    from app.db_kv import kv_set as _kv_set
+    _kv_set(tmp_path, "setup_completed_at", "test fixture")
 
     import app.main as main_module
 
@@ -98,7 +99,6 @@ def test_setup_step3_includes_parent_name_field_in_kid_mode(kid_client: TestClie
     # Force a /setup/3 render by clearing the completion marker.
     from app.db_kv import kv_delete
 
-    main_module.state.cfg.data_root.joinpath(".setup_complete").unlink(missing_ok=True)
     kv_delete(main_module.state.cfg.data_root, main_module.KV_SETUP_COMPLETED)
     r = kid_client.get("/setup/3")
     assert r.status_code == 200, r.text

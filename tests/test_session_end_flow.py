@@ -19,12 +19,15 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     ctx = tmp_path / "context"
     ctx.mkdir(parents=True, exist_ok=True)
     (ctx / "05_current_state.md").write_text("# current_state stub\n", encoding="utf-8")
-    # Mark setup complete so / doesn't redirect to the wizard.
-    (tmp_path / ".setup_complete").write_text("test fixture\n", encoding="utf-8")
 
     import app.main as main_module
 
     with TestClient(main_module.app) as c:
+        # Mark setup complete in kv so / doesn't redirect to the wizard.
+        # Must happen after lifespan startup so claudia.db exists.
+        from app.db_kv import kv_set
+
+        kv_set(tmp_path, main_module.KV_SETUP_COMPLETED, "test fixture")
         yield c
 
 

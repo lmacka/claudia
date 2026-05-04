@@ -312,12 +312,12 @@ async def lifespan(app: FastAPI):
     state.cfg = cfg
     state.app_root = Path(__file__).resolve().parent
 
-    for sub in ("sessions", "session-logs", "uploads", "context", "session-exports", "library", "people", ".locks"):
-        (cfg.data_root / sub).mkdir(parents=True, exist_ok=True)
+    # All on-disk subtrees under cfg.data_root are created lazily by their
+    # writers (Library / People / auth / summariser / setup wizard /
+    # _render_handover_pdf). No pre-creation needed at boot.
 
     # Storage (T-NEW-I): SqliteSessionStore in every mode. Tests get a fresh
     # /data/claudia.db under tmp_path so there's no global-state contamination.
-    # Existing JSONL files on prod are left untouched but no longer read.
     state.store = SqliteSessionStore(cfg.data_root)
     # ContextLoader's people_md_provider + library_index_provider are wired
     # below once state.people / state.library are constructed; until then
@@ -382,26 +382,6 @@ async def lifespan(app: FastAPI):
     # _parent_name_context so /setup edits apply without a pod restart.
     state.templates.env.globals["crisis_footer_text"] = safety.CRISIS_FOOTER_TEXT
     state.templates.env.globals["au_hotlines"] = safety.AU_HOTLINES
-
-    # Setup-complete marker. Existing live deploys (sessions, library, or
-    # legacy .setup_complete file) get auto-marked so /setup doesn't bounce
-    # them after the v0.7.0 storage migration. Fresh installs go through
-    # the wizard.
-    if not _setup_complete():
-        legacy_marker = cfg.data_root / ".setup_complete"
-        looks_used = (
-            legacy_marker.exists()
-            or any((cfg.data_root / "sessions").glob("*.jsonl"))
-            or any((cfg.data_root / "session-logs").glob("*.md"))
-            or (cfg.data_root / "library" / "manifest.json").exists()
-            or (cfg.data_root / "context" / "01_background.md").exists()
-        )
-        if looks_used:
-            try:
-                _mark_setup_complete("auto-marked at v0.7.0 boot; legacy data on disk")
-                log.info("setup.auto_marked_existing_deploy")
-            except OSError as e:
-                log.warning("setup.auto_mark_failed", error=str(e))
 
     log.info(
         "app.startup",

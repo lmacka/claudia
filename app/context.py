@@ -2,19 +2,21 @@
 Context pack loader + system prompt assembler.
 
 Block 1 (cached, stable):
-    companion.md + SKILL.md + 01-04 + 06_interpretive_notes
+    companion-{adult|kid}.md + 01_background.md + optional additional
+    instructions appended at assemble time
 Block 2 (cached, rotates):
-    INDEX.md
+    library index (rendered from Library.render_index_md via provider)
+    + people roster (rendered from People.render_people_md via provider)
 Block 3 (uncached, volatile):
-    05_current_state.md + recent session-log tails + same-day raw transcripts
-    + app-feedback.md tail + current date
+    05_current_state.md + recent session-log tails + same-day raw
+    transcripts (from SqliteSessionStore via provider) + app-feedback
+    tail (from app_feedback table) + current date
 """
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -118,54 +120,6 @@ class ContextLoader:
                 parts.append(f"### {f.stem}\n\n{tail}")
         return "\n\n".join(parts)
 
-    def _recent_same_day_transcripts(
-        self, window_hours: int = 8, max_chars_each: int = 2500
-    ) -> str:
-        sessions_dir = self.data_root / "sessions"
-        if not sessions_dir.exists():
-            return ""
-        cutoff = datetime.now(UTC) - timedelta(hours=window_hours)
-        parts: list[str] = []
-        candidates = sorted(
-            (p for p in sessions_dir.glob("*.jsonl") if ".bak-" not in p.name),
-            reverse=True,
-        )[:6]
-        for path in candidates:
-            try:
-                created: datetime | None = None
-                lines: list[str] = []
-                with path.open("r", encoding="utf-8") as fh:
-                    for raw in fh:
-                        try:
-                            rec = json.loads(raw)
-                        except json.JSONDecodeError:
-                            continue
-                        if rec.get("type") == "header" and not created:
-                            ts = rec.get("created_at")
-                            if ts:
-                                try:
-                                    created = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-                                except ValueError:
-                                    created = None
-                        if rec.get("type") == "message":
-                            role = rec.get("role")
-                            content = (rec.get("content") or "").strip()
-                            if role not in ("user", "assistant") or not content:
-                                continue
-                            meta = rec.get("meta") or {}
-                            if meta.get("is_synthetic_opener"):
-                                continue
-                            lines.append(f"{role}: {content}")
-                if created is None or created < cutoff:
-                    continue
-                tail = "\n".join(lines)
-                if len(tail) > max_chars_each:
-                    tail = "…\n" + tail[-max_chars_each:]
-                if tail:
-                    parts.append(f"### {path.stem}\n{tail}")
-            except OSError:
-                continue
-        return "\n\n".join(parts)
 
     def _app_feedback_tail(self, max_bytes: int = 2048) -> str:
         # T-NEW-I: app feedback now lives in SQLite. Falls back to "" if the
@@ -246,26 +200,20 @@ class ContextLoader:
 
         block1 = "\n\n---\n\n".join(stable_parts)
 
-        # Block 2 — rotated. INDEX.md + people.md (when a provider is wired).
-        # Library index is rendered live from the SQLite-backed library when
-        # a provider is set (Library.render_index_md returns markdown that
-        # already includes the `# INDEX.md` header). Falls back to an on-disk
-        # INDEX.md for tests that don't wire the provider.
+        # Block 2 — rotated. Library index + people roster.
+        # Library.render_index_md returns markdown that already includes the
+        # `# INDEX.md` header. When no provider is wired (a few tests), the
+        # block renders the empty placeholder.
         rendered_index = ""
         if self._library_index_provider is not None:
             try:
                 rendered_index = (self._library_index_provider() or "").strip()
             except Exception as e:  # noqa: BLE001
                 log.warning("context.library_index_provider_failed", error=str(e))
-        if rendered_index:
-            block2_parts = [rendered_index]
-        else:
-            index = self._read(self.context_dir / "INDEX.md").strip()
-            block2_parts = [
-                f"# INDEX.md\n\n{index}"
-                if index
-                else "# INDEX.md\n\n(empty — no source-material or uploads yet)"
-            ]
+        block2_parts = [
+            rendered_index
+            or "# INDEX.md\n\n(empty — no source-material or uploads yet)"
+        ]
         if self._people_md_provider is not None:
             try:
                 people_md = self._people_md_provider() or ""
@@ -284,11 +232,6 @@ class ContextLoader:
                 same_day = (self._same_day_transcripts_provider() or "").strip()
             except Exception as e:  # noqa: BLE001
                 log.warning("context.same_day_provider_failed", error=str(e))
-        if not same_day:
-            # Legacy on-disk JSONL fallback for tests that don't wire the
-            # provider. Production deploys post-SQLite migration always have
-            # the provider set, so this returns "" there.
-            same_day = self._recent_same_day_transcripts()
         app_feedback = self._app_feedback_tail()
         now = datetime.now(TZ).strftime("%A %d %B %Y, %H:%M %Z")
         volatile_parts = [

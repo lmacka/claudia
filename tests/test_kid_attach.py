@@ -27,7 +27,8 @@ def _fresh_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str = "kid
     ctx = tmp_path / "context"
     ctx.mkdir(parents=True, exist_ok=True)
     (ctx / "05_current_state.md").write_text("# current_state stub\n", encoding="utf-8")
-    (tmp_path / ".setup_complete").write_text("test fixture\n", encoding="utf-8")
+    from app.db_kv import kv_set as _kv_set
+    _kv_set(tmp_path, "setup_completed_at", "test fixture")
 
     if "app.main" in sys.modules:
         importlib.reload(sys.modules["app.main"])
