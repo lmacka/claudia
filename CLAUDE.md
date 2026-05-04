@@ -34,71 +34,51 @@ adults and parents of neurodivergent kids. Forked 2026-04-26 after a
   spec. Lifted from a parallel design doc; retargeted to claudia per
   Premise 5.
 
-## Where you start (next-session bootstrap)
+## Where you are (current state, v0.8.6)
 
-The fork has been done. The previous session left the repo in this state:
+Both deploys live on `ghcr.io/lmacka/claudia:0.8.6`:
+- `claudia.coopernetes.com` — adult mode (Liam)
+- `claudia-jasper.coopernetes.com` — kid mode (Jasper)
 
-- `app/` — lifted unchanged from robo-therapist. 51 tests passing
-  pre-fork; **run `uv sync && uv run pytest tests/ -q` to confirm they
-  still pass.** If they do, the lift is clean.
-- `app/prompts/` — `companion.md` renamed to `companion-adult.md`,
-  `auditor.md` renamed to `auditor-adult.md`. Empty stubs created for
-  `companion-kid.md`, `auditor-kid.md`, `meta-audit.md` (these get filled
-  in v1 step 6).
-- `chart/` — skeleton with `Chart.yaml`, `values.yaml`, `values.schema.json`
-  (with the kid-mode safety floor encoded as `const: true` constraints —
-  do not relax these), `README.md`. **`chart/templates/` is empty** —
-  needs deployment.yaml, service.yaml, ingress/httproute.yaml, pvc.yaml.
-- `.github/workflows/` — empty. Needs test.yml, image.yml, chart.yml.
-- `docs/` — design doc, wireframe, library-people-plan all in place.
+Repo skeleton is fully fleshed out:
+- `app/` — lifted from robo-therapist + extensively built out. 416 tests
+  passing, 52 skipped (libreoffice-gated extractor tests + redteam suite
+  gated on `RUN_REDTEAM=1`). Run `bash scripts/preflight.sh` for the full
+  CI-equivalent check.
+- `app/prompts/` — `companion-adult.md`, `companion-kid.md`,
+  `auditor-adult.md`, `auditor-kid.md`, `meta-audit.md`, `handover.md` all
+  written (no stubs left).
+- `chart/templates/` — deployment, service, ingress, httproute, pvc,
+  _helpers all in place. `examples/adult-values.yaml` and
+  `examples/kid-values.yaml` both render and pass schema validation.
+- `.github/workflows/` — `test.yml`, `image.yml`, `chart.yml`,
+  `redteam.yml` all wired up. Tag `vX.Y.Z` triggers image + chart push.
+- `docs/` — `design.md`, `build-plan-v1.md`, `library-people-plan.md`,
+  `safety.md`, `qa-protocol.md`, `storage-decision.md`, `wireframe/`.
 
-## What to do next (v1 build order, from `docs/design.md`)
+## What to do next
 
-> Build order revised by /plan-eng-review on 2026-04-26 (D1): library + people
-> moved before the wizard. See `docs/design.md` "Decisions from /plan-eng-review"
-> for the full set of decisions that came out of that review.
+**v1 build sequence** — see `docs/build-plan-v1.md` for the canonical
+status table. Steps 1–8 shipped. Currently outstanding:
 
-You are at **step 1** of the build order:
+- **Step 9** — README + first-deploy walkthrough (not started; gated by
+  step 10c green)
+- **Step 10** — Red-team CI suite (ship-blocker)
+  - 10a/b — `tests/test_redteam.py` exists but the scenario file may not
+    have all 50 hand-curated cases yet; verify before claiming done
+  - 10c — workflow wired (`.github/workflows/redteam.yml`); confirm it
+    actually fails on regression, not just runs green
+- **Step 11** — Encryption restore from `crypto-snapshot-pre-defer` tag
+  (end of queue, multi-step 11a–11e)
+- **Step 12** — Original "Ship Jasper's instance" — already happened at
+  v0.5.0; the spec entry is left in the plan as a milestone marker
 
-1. **Repo + chart skeleton + CI + examples** ← partially done, finish:
-   - Fill `chart/templates/` (deployment, service, ingress.yaml AND
-     httproute.yaml gated by `ingress.gatewayApi`, pvc, _helpers.tpl).
-     Reference `~/git/lmacka/coopernetes/kubernetes/apps/robo/app/` for the
-     working robo-therapist manifests but **rewrite for generic k8s** — do
-     NOT inherit the Synology/coopernetes-specific assumptions. Bake in
-     `securityContext` (runAsNonRoot, runAsUser 1000) and `fsGroup` for the
-     PVC. Run with swap disabled (per D2).
-   - Write `.github/workflows/test.yml` (pytest on PR), `image.yml`
-     (docker buildx multi-arch amd64+arm64, push on tag), `chart.yml`
-     (helm package + push to ghcr.io as OCI artifact).
-   - Create `examples/adult-values.yaml` and `examples/kid-values.yaml`.
-   - Confirm `helm template chart/ --values examples/adult-values.yaml`
-     and `examples/kid-values.yaml` both render without errors and pass
-     schema validation.
-   - Trivial fixes: `pyproject.toml` rename `robo-therapist` → `claudia`,
-     add `cryptography` + `argon2-cffi` deps; Dockerfile system user
-     `robo` → `claudia`.
-2. **Adult mode parity** (lift app/, ship to Liam's cluster as a second deploy
-   alongside robo-therapist for parallel-running validation).
-3. **Library + people + extractors** (per `docs/library-people-plan.md`).
-   *(Was step 4; moved earlier per D1.)*
-4. **Three-stage setup wizard**, depends on step 3 substrate.
-   *(Was step 3; moved later per D1.)*
-5. **Memory-diff review screen**.
-6. **Kid mode persona + safety floor + two-role auth + `/admin` routes**.
-   Includes `app/crypto.py` (per D4 append-friendly encrypted JSONL),
-   `app/session_keys.py` (per D2 KEK cache), `app/auth.py` (per D5 CSRF +
-   24h sliding expiry + IP rate limit), `app/safety.py` (Haiku
-   pre-classifier non-disableable per Premise 3), `app/meta_audit.py`
-   (per D7 cached + 7-day window), `app/profile.py` (per D8 Pydantic).
-7. **OCR-discard kid attachment flow** + people inline-prompt (with split
-   public/private notes per D14).
-8. **Theme system + settings page**.
-9. **README + first-deploy walkthrough**.
-10. **Ship Jasper's instance**.
-
-**~4-5 weeks of CC-time to v1** per the design doc estimate (review notes:
-realistic 6-8 weeks given encryption + red-team complexity).
+**Day-to-day mode (since v0.5.0):** debugging-passes. User exercises a
+release in the browser as Liam or Jasper, reports bugs inline mid-chat,
+loop is `/investigate or direct fix → preflight → push → wait CI → tag
+v0.X.Y → bump coopernetes deployments → /healthz`. The `## QA testing`
+section above is load-bearing here — green status code is not a passing
+test, drive the actual flow.
 
 ## Active TODOs (deferred from v1)
 
@@ -209,3 +189,20 @@ See `TODOS.md` for full context. Captured during /plan-eng-review:
 - Don't commit anything from `/data/`, `staging/`, `library/`, `people/`,
   or `.credentials/` (in `.gitignore`).
 - Don't force-push or delete branches/tags without explicit instruction.
+
+## Health Stack
+
+What `/health` runs. Mirrors `scripts/preflight.sh` so CI and local dashboards
+agree on what "healthy" means.
+
+- lint: `uv run ruff check app tests`
+- test: `uv run pytest tests/ -q`
+- helm-lint-adult: `helm lint chart/ --values examples/adult-values.yaml`
+- helm-lint-kid: `helm lint chart/ --values examples/kid-values.yaml`
+- helm-template-adult: `helm template claudia chart/ --values examples/adult-values.yaml`
+- helm-template-kid: `helm template claudia chart/ --values examples/kid-values.yaml`
+- helm-template-gateway: `helm template claudia chart/ --values examples/adult-values.yaml --set ingress.gatewayApi=true --set ingress.parentRef.name=internal-gateway` (must contain `kind: HTTPRoute`)
+- schema-floor: `kid.safety.haiku_classifier=false` and `kid.safety.no_anthropomorphism=false` must both be rejected by `helm template`
+- typecheck: SKIP (no mypy/pyright in pyproject)
+- deadcode: SKIP (no vulture/knip configured)
+- shell: SKIP unless shellcheck installed locally

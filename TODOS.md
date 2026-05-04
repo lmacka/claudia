@@ -419,3 +419,34 @@ match the live app's visual language.
 
 **Depends on:** Step 7b (template re-skin) — so wireframe and live app
 use the same design language.
+
+## T-NEW-J — Split `app/main.py` into per-feature route modules
+
+**What:** `app/main.py` is 3442 lines / 127KB / 70 route handlers. Split
+into per-feature modules (`auth_routes.py`, `session_routes.py`,
+`library_routes.py`, `people_routes.py`, `settings_routes.py`,
+`setup_routes.py`, `admin_routes.py`) using FastAPI APIRouters mounted
+from a slim `main.py` that handles lifespan + middleware + router
+registration.
+
+**Why:** Captured during /health tidy-up on 2026-05-04. The file is at
+the size where every grep, every IDE jump, every code review pays a
+tax. New developers (and Claude sessions) struggle to map the surface
+area. Refactor cost amortises across every future read.
+
+**Pros:** Easier navigation; per-feature test placement becomes obvious;
+git blame stays meaningful per file; reduces merge conflicts when two
+batches of work touch unrelated routes.
+
+**Cons:** Pure refactor with risk — easy to drop a route, easy to break
+a test that imports something from `app.main`. No user-visible benefit;
+takes 2–4 hours of focused work to do safely.
+
+**Context:** Best done in one sitting with the test suite as the
+verification gate. Suggested order: extract the smallest groups first
+(`/healthz` + `/metrics` + `/readyz` → health_routes; `/help` →
+public_routes), confirm tests pass, then move bigger groups
+(library, people, sessions, setup) one PR at a time.
+
+**Depends on:** Nothing technical. Schedule when no other work is
+in-flight against `main.py` so rebase pain stays bounded.
