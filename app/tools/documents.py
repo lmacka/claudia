@@ -315,14 +315,3 @@ SEARCH_DOCUMENTS_SPEC = lambda library: ToolSpec(  # noqa: E731
 )
 
 
-# ---------------------------------------------------------------------------
-# rebuild_index — kept as a no-op shim for legacy callers (e.g. gmail).
-# Block 2 reads from library.render_index_md() at request time, so an
-# on-disk INDEX.md is no longer needed.
-# ---------------------------------------------------------------------------
-
-
-def rebuild_index(data_root: Path) -> Path | None:
-    """Legacy shim. Returns None; block 2 renders the index dynamically."""
-    log.debug("documents.rebuild_index_noop", data_root=str(data_root))
-    return None

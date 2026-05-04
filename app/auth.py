@@ -138,7 +138,6 @@ def kid_auth_path(data_root: Path) -> Path:
 KID_COOKIE_NAME = "claudia-kid"
 ADULT_COOKIE_NAME = "claudia-adult"
 COOKIE_TTL_SECONDS = 24 * 3600
-KID_COOKIE_TTL_SECONDS = COOKIE_TTL_SECONDS  # back-compat
 
 
 def cookie_name(role: Role) -> str:

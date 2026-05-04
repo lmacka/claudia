@@ -73,12 +73,8 @@ def _auditor_system_prompt(
     """Load auditor-{mode}.md and substitute display-name placeholders.
 
     Mode is "adult" or "kid" — files are auditor-adult.md / auditor-kid.md.
-    A bare auditor.md path is kept as a back-compat fallback for tests that
-    don't supply a mode.
     """
     candidate = prompts_dir / f"auditor-{mode}.md"
-    if not candidate.exists():
-        candidate = prompts_dir / "auditor.md"  # legacy fallback
     text = candidate.read_text(encoding="utf-8")
     if mode == "kid":
         text = (

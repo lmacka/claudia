@@ -144,7 +144,7 @@ def test_kid_session_expired_token_pruned(tmp_path: Path, monkeypatch: pytest.Mo
     store = auth_mod.KidSessionStore(tmp_path)
     store.add("token-old", "Jasper")
     # Backdate the entry past TTL.
-    real_ttl = auth_mod.KID_COOKIE_TTL_SECONDS
+    real_ttl = auth_mod.COOKIE_TTL_SECONDS
     fake_now = time.time() + real_ttl + 60
     monkeypatch.setattr(auth_mod.time, "time", lambda: fake_now)
     assert store.get("token-old") is None

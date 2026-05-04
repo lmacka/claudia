@@ -144,10 +144,3 @@ def test_auditor_system_prompt_loads_adult_file() -> None:
     assert "{{DISPLAY_NAME}}" not in text or text.startswith("# Auditor")
 
 
-def test_auditor_system_prompt_legacy_fallback(tmp_path: Path) -> None:
-    """If only legacy auditor.md exists, the helper falls back to it (back-compat)."""
-    from app.summariser import _auditor_system_prompt
-
-    (tmp_path / "auditor.md").write_text("# legacy\n", encoding="utf-8")
-    text = _auditor_system_prompt(tmp_path, mode="kid")
-    assert text == "# legacy\n"

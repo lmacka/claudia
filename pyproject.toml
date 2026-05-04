@@ -49,6 +49,26 @@ ignore = ["E501", "B904", "B008", "E731", "SIM102", "SIM105", "SIM117"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 
+# Vulture (run via `uvx vulture app/`, no project dep). Defaults below filter
+# the noise inherent to a FastAPI + Pydantic app so vulture's output reflects
+# real findings rather than framework-driven calls.
+[tool.vulture]
+paths = ["app", "tests"]
+min_confidence = 60
+ignore_decorators = [
+    # FastAPI / Starlette routes — called by the framework via decorator
+    # registration, not from Python code.
+    "@app.get", "@app.post", "@app.put", "@app.patch", "@app.delete",
+    "@app.head", "@app.options", "@app.middleware", "@app.exception_handler",
+    "@app.on_event", "@router.get", "@router.post", "@router.put",
+    "@router.patch", "@router.delete",
+    # Pydantic — validators are invoked by the metaclass, not by name.
+    "@field_validator", "@model_validator", "@validator", "@root_validator",
+    # Standard library / pytest patterns that look unused to a static scan.
+    "@property", "@classmethod", "@staticmethod",
+    "@pytest.fixture", "@pytest.mark.*",
+]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

@@ -13,7 +13,6 @@ from app.tools.documents import (
     READ_DOCUMENT_SPEC,
     SEARCH_DOCUMENTS_SPEC,
     _safe_resolve,
-    rebuild_index,
 )
 from app.tools.registry import ToolError, ToolRegistry
 
@@ -289,11 +288,3 @@ def test_search_documents_excludes_archived(tmp_path: Path):
     assert drop not in out
 
 
-# ---------------------------------------------------------------------------
-# rebuild_index — kept as a no-op shim
-# ---------------------------------------------------------------------------
-
-
-def test_rebuild_index_is_noop(tmp_path: Path):
-    """Block 2 renders the index dynamically; rebuild_index returns None."""
-    assert rebuild_index(tmp_path) is None
