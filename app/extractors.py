@@ -332,6 +332,10 @@ class ImageExtractor:
 # ---------------------------------------------------------------------------
 
 
+# Used by the pypdf↔pdfplumber cross-check to normalise whitespace before
+# substring comparison, so trivial spacing differences don't trigger warnings.
+_WHITESPACE_RUN = re.compile(r"\s+")
+
 # Date patterns swept on PDF first page when metadata is missing.
 _PDF_DATE_PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b"), "iso"),
@@ -523,15 +527,23 @@ class PdfExtractor:
     def _cross_check_pdfplumber(path: Path, pypdf_text: str, n_pages: int) -> bool:
         import pdfplumber
 
+        # Whitespace handling differs between pypdf and pdfplumber (pypdf often
+        # adds trailing spaces, pdfplumber preserves \n where pypdf may insert
+        # a space). A literal substring match flags those whitespace deltas as
+        # "missing text" even though the content is identical. Normalize both
+        # sides — collapse any whitespace run to a single space — before the
+        # 30-char snippet comparison so the check fires only on genuine
+        # extraction drift.
+        norm_pypdf = _WHITESPACE_RUN.sub(" ", pypdf_text).strip()
         sample_indices = {0, n_pages - 1, max(0, n_pages // 2)}
         with pdfplumber.open(str(path)) as pdf:
             for idx in sorted(sample_indices):
                 if idx >= len(pdf.pages):
                     continue
                 plumber_text = pdf.pages[idx].extract_text() or ""
-                # Look for any 30-char run of pdfplumber's text in pypdf's output.
-                snippet = plumber_text.strip()[:30]
-                if snippet and snippet not in pypdf_text:
+                norm_plumber = _WHITESPACE_RUN.sub(" ", plumber_text).strip()
+                snippet = norm_plumber[:30]
+                if snippet and snippet not in norm_pypdf:
                     return False
         return True
 
