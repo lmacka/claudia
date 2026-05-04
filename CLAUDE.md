@@ -34,9 +34,12 @@ adults and parents of neurodivergent kids. Forked 2026-04-26 after a
   spec. Lifted from a parallel design doc; retargeted to claudia per
   Premise 5.
 
-## Where you are (current state, v0.8.6)
+## Where you are (current state)
 
-Both deploys live on `ghcr.io/lmacka/claudia:0.8.6`:
+Source is at v0.8.7 (`pyproject.toml` + `chart/Chart.yaml`). Both deploys
+live on whatever tag was last bumped in
+`~/git/lmacka/coopernetes/kubernetes/apps/claudia*/app/deployment.yaml`
+(check there for the live-image truth):
 - `claudia.coopernetes.com` — adult mode (Liam)
 - `claudia-jasper.coopernetes.com` — kid mode (Jasper)
 
