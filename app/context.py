@@ -44,6 +44,7 @@ class ContextLoader:
         kid_parent_display_name_provider=None,
         people_md_provider=None,
         additional_instructions_provider=None,
+        library_index_provider=None,
     ) -> None:
         self.data_root = data_root
         self.prompts_dir = prompts_dir
@@ -64,6 +65,10 @@ class ContextLoader:
         # so the user's overrides are scoped + visible to anyone reading
         # the assembled prompt for debugging.
         self._additional_instructions_provider = additional_instructions_provider
+        # Callable[[], str] returning the rendered library index (markdown).
+        # Wired to Library.render_index_md(). Used by Block 2 instead of
+        # the legacy on-disk INDEX.md (which nothing writes anymore).
+        self._library_index_provider = library_index_provider
 
     @property
     def kid_parent_display_name(self) -> str:
@@ -236,12 +241,25 @@ class ContextLoader:
         block1 = "\n\n---\n\n".join(stable_parts)
 
         # Block 2 — rotated. INDEX.md + people.md (when a provider is wired).
-        index = self._read(self.context_dir / "INDEX.md").strip()
-        block2_parts = [
-            f"# INDEX.md\n\n{index}"
-            if index
-            else "# INDEX.md\n\n(empty — no source-material or uploads yet)"
-        ]
+        # Library index is rendered live from the SQLite-backed library when
+        # a provider is set (Library.render_index_md returns markdown that
+        # already includes the `# INDEX.md` header). Falls back to an on-disk
+        # INDEX.md for tests that don't wire the provider.
+        rendered_index = ""
+        if self._library_index_provider is not None:
+            try:
+                rendered_index = (self._library_index_provider() or "").strip()
+            except Exception as e:  # noqa: BLE001
+                log.warning("context.library_index_provider_failed", error=str(e))
+        if rendered_index:
+            block2_parts = [rendered_index]
+        else:
+            index = self._read(self.context_dir / "INDEX.md").strip()
+            block2_parts = [
+                f"# INDEX.md\n\n{index}"
+                if index
+                else "# INDEX.md\n\n(empty — no source-material or uploads yet)"
+            ]
         if self._people_md_provider is not None:
             try:
                 people_md = self._people_md_provider() or ""

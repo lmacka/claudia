@@ -319,8 +319,9 @@ async def lifespan(app: FastAPI):
     # /data/claudia.db under tmp_path so there's no global-state contamination.
     # Existing JSONL files on prod are left untouched but no longer read.
     state.store = SqliteSessionStore(cfg.data_root)
-    # ContextLoader's people_md_provider is wired below once state.people is
-    # constructed; until then it returns "".
+    # ContextLoader's people_md_provider + library_index_provider are wired
+    # below once state.people / state.library are constructed; until then
+    # they return "".
     state.loader = ContextLoader(
         cfg.data_root,
         cfg.prompts_dir,
@@ -329,6 +330,7 @@ async def lifespan(app: FastAPI):
         kid_parent_display_name_provider=effective_kid_parent_display_name,
         people_md_provider=lambda: state.people.render_people_md() if hasattr(state, "people") else "",
         additional_instructions_provider=lambda: runtime_config_mod.get_additional_instructions(cfg.data_root),
+        library_index_provider=lambda: state.library.render_index_md() if hasattr(state, "library") else "",
     )
     state.rate_limiter = auth_mod.IPRateLimiter()
     state.kid_session_store = auth_mod.SessionStore(cfg.data_root, role="kid")
