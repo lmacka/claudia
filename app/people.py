@@ -445,12 +445,6 @@ class People:
                 out.append(meta)
         return out
 
-    # --- manifest (no-op back-compat) --------------------------------------
-
-    def rebuild_manifest(self) -> None:
-        """No-op since v0.7.0 — the DB is the manifest."""
-        return
-
     # --- people.md rendering ------------------------------------------------
 
     def render_people_md(self) -> str:

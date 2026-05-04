@@ -73,10 +73,6 @@ class Config:
         return self.ops_mode == "local"
 
     @property
-    def is_dev(self) -> bool:
-        return self.ops_mode == "dev"
-
-    @property
     def is_kid(self) -> bool:
         return self.mode == "kid"
 

@@ -70,10 +70,6 @@ class SafetyResult:
     def flagged(self) -> bool:
         return self.flagged_regex or self.flagged_classifier
 
-    @property
-    def crisis_footer_prominence(self) -> Prominence:
-        return self.prominence
-
 
 # Regex tripwires. Each pattern fires on a category. We deliberately err
 # toward over-firing: false positives elevate the crisis footer, which is

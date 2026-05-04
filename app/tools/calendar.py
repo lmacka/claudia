@@ -1,17 +1,8 @@
-"""
-Google Calendar tools.
-
-Matches the Bri|Trisha|therapy regex to derive days-since-last-human-therapy
-for the home-page counter (sourced from Calendar, not self-reported — per
-outside-voice feedback D).
-"""
+"""Google Calendar tools."""
 
 from __future__ import annotations
 
-import re
 from collections.abc import Callable
-from datetime import UTC, date, datetime, timedelta
-from zoneinfo import ZoneInfo
 
 import structlog
 from googleapiclient.discovery import build
@@ -22,10 +13,6 @@ from app.tools.registry import ToolError, ToolSpec
 
 log = structlog.get_logger()
 
-BRISBANE = ZoneInfo("Australia/Brisbane")
-
-THERAPY_REGEX = re.compile(r"\b(bri|trisha|therapy|therapist|counsel+or|counsel+ing)\b", re.IGNORECASE)
-
 
 def _cal_service(cfg: GoogleAuthConfig):
     creds = load_credentials(cfg)
@@ -34,12 +21,6 @@ def _cal_service(cfg: GoogleAuthConfig):
             "Calendar is not connected. Visit /connect-gmail to authorise."
         )
     return build("calendar", "v3", credentials=creds, cache_discovery=False)
-
-
-def _to_rfc3339(dt: datetime) -> str:
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=UTC)
-    return dt.isoformat()
 
 
 # ---------------------------------------------------------------------------
@@ -213,64 +194,3 @@ def update_calendar_event_spec(cfg: GoogleAuthConfig) -> ToolSpec:
         },
         handler=_update_calendar_event_handler(cfg),
     )
-
-
-# ---------------------------------------------------------------------------
-# Days-since-human-therapy — sourced from Calendar, not self-report
-# ---------------------------------------------------------------------------
-
-
-def days_since_last_therapy(cfg: GoogleAuthConfig, today: date | None = None) -> int | None:
-    """Return days since the most recent Calendar event matching THERAPY_REGEX
-    that is in the past. Returns None if Calendar isn't connected or no matches.
-    """
-    if today is None:
-        today = datetime.now(BRISBANE).date()
-    creds = load_credentials(cfg)
-    if creds is None:
-        return None
-    svc = build("calendar", "v3", credentials=creds, cache_discovery=False)
-    # Look back up to 180 days.
-    time_min = (today - timedelta(days=180)).isoformat() + "T00:00:00Z"
-    time_max = today.isoformat() + "T23:59:59Z"
-    try:
-        resp = (
-            svc.events()
-            .list(
-                calendarId="primary",
-                timeMin=time_min,
-                timeMax=time_max,
-                singleEvents=True,
-                orderBy="startTime",
-                maxResults=250,
-            )
-            .execute()
-        )
-    except HttpError as e:
-        log.warning("calendar.days_since.error", error=str(e))
-        return None
-
-    events = resp.get("items", [])
-    last_match: date | None = None
-    for ev in events:
-        title = ev.get("summary") or ""
-        if not THERAPY_REGEX.search(title):
-            continue
-        start = ev.get("start", {})
-        start_str = start.get("dateTime") or start.get("date")
-        if not start_str:
-            continue
-        try:
-            if "T" in start_str:
-                d = datetime.fromisoformat(start_str.replace("Z", "+00:00")).astimezone(BRISBANE).date()
-            else:
-                d = date.fromisoformat(start_str)
-        except ValueError:
-            continue
-        if d <= today:
-            if last_match is None or d > last_match:
-                last_match = d
-
-    if last_match is None:
-        return None
-    return (today - last_match).days

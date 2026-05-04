@@ -18,16 +18,6 @@ log = structlog.get_logger()
 
 SONNET = "claude-sonnet-4-6"
 
-# Pricing table kept for the report cost estimate (USD per 1M tokens, Apr 2026).
-PRICING: dict[str, dict[str, float]] = {
-    SONNET: {
-        "input": 3.0,
-        "output": 15.0,
-        "cache_read": 0.30,
-        "cache_write": 3.75,
-    },
-}
-
 
 @dataclass
 class Usage:
@@ -41,15 +31,6 @@ class Usage:
         self.output_tokens += other.output_tokens
         self.cache_read_tokens += other.cache_read_tokens
         self.cache_write_tokens += other.cache_write_tokens
-
-    def cost_usd(self, model: str) -> float:
-        p = PRICING.get(model, PRICING[SONNET])
-        return (
-            (self.input_tokens / 1_000_000) * p["input"]
-            + (self.output_tokens / 1_000_000) * p["output"]
-            + (self.cache_read_tokens / 1_000_000) * p["cache_read"]
-            + (self.cache_write_tokens / 1_000_000) * p["cache_write"]
-        )
 
 
 @dataclass

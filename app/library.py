@@ -457,15 +457,6 @@ class Library:
                 shutil.rmtree(doc_dir)
         log.info("library.doc_hard_deleted", doc_id=doc_id)
 
-    # --- manifest (no-op back-compat) --------------------------------------
-
-    def rebuild_manifest(self) -> None:
-        """No-op since v0.7.0 — the DB is the manifest. Kept as a stub so
-        legacy callers (and tests) don't break. A concurrent reader would
-        previously have read the manifest.json snapshot; SQLite reads see the
-        latest state directly."""
-        return
-
     # --- INDEX.md rendering -------------------------------------------------
 
     def render_index_md(self) -> str:
