@@ -1,11 +1,8 @@
-# claudia Helm values — see docs/design.md "Helm chart values" section
-# IMMUTABLE post-install: mode, encryption settings.
+# claudia Helm values — single-tenant, single-user-per-deploy.
 
-mode: adult                   # adult | kid — IMMUTABLE post-install
-
-displayName: ""               # required: e.g. "Liam" or "Jasper"
-dob: ""                       # required: ISO date e.g. "1985-02-14"; age computed
-country: "AU"                 # affects timezone and crisis hotlines
+displayName: ""               # required: e.g. "Liam"
+dob: ""                       # required: ISO date e.g. "1985-02-14"
+country: "AU"                 # affects timezone
 
 theme: sage                   # sage | blush | lavender | amber | contrast
 
@@ -14,41 +11,28 @@ theme: sage                   # sage | blush | lavender | amber | contrast
 # needed when you want to bootstrap from an externally-managed source
 # (SOPS, Vault, etc) — leave the blocks below commented out for a
 # normal install. When set, env-mounted values WIN over /settings edits
-# (decision 8) so the UI fields render read-only.
+# so the UI fields render read-only.
 
 # anthropicSecretRef:        # OPTIONAL — set if you want the API key from a Helm Secret
 #   name: anthropic-api-key
 #   key: api-key
 
-# adult-mode-only block. Ignored when mode=kid.
-adult:
-  integrations:
-    google:                   # Gmail + Google Calendar tools.
-      enabled: false          # opt-in; default off. Kid mode never honours this.
-      # secretRef:            # OPTIONAL — credentials come from /settings if not set here
-      #   name: google-oauth
-      #   clientIdKey: client-id
-      #   clientSecretKey: client-secret
+integrations:
+  google:                     # Gmail + Google Calendar tools.
+    enabled: false            # opt-in; default off.
+    # secretRef:              # OPTIONAL — credentials come from /settings if not set here
+    #   name: google-oauth
+    #   clientIdKey: client-id
+    #   clientSecretKey: client-secret
 
-# basicAuth — REQUIRED in kid mode (parent-admin password for /admin/*).
-# OPTIONAL in adult mode: the user picks their password in /setup/2.
+# basicAuth — OPTIONAL: the user picks their password in /setup/2.
 # basicAuth:
 #   passwordSecretRef:
 #     name: claudia-auth
 #     key: password
 
-# kid-mode-only block — ignored when mode=adult
-kid:
-  parentDisplayName: "your parent"    # default; the parent overrides this in /setup or /settings (per-deploy, persists to /data/parent_display_name.txt)
-  safety:
-    haiku_classifier: true            # NON-DISABLEABLE per values.schema.json
-    no_anthropomorphism: true         # forbids "I miss you" / streaks / romance
-  encryption:
-    enabled: true                     # at-rest encryption with kid passphrase
-
 model:
   primary: claude-sonnet-4-6
-  classifier: claude-haiku-4-5
 
 pvc:
   size: 10Gi
@@ -58,15 +42,10 @@ ingress:
   enabled: true
   host: ""                            # required: e.g. claudia.example.com
   className: ""                       # empty = cluster default
-  gatewayApi: false                   # true = render HTTPRoute (Gateway API); false = Ingress (default per /plan-eng-review D6)
-  parentRef:                          # used only when gatewayApi=true
-    name: ""                          # e.g. "internal-gateway"
-    namespace: ""                     # gateway namespace, if different
-    sectionName: ""                   # listener name on the gateway, e.g. "https"
   annotations: {}                     # cert-manager / nginx hints
   tls:
     enabled: true
-    secretName: ""                    # required if tls.enabled (Ingress only; HTTPRoute uses listener TLS)
+    secretName: ""                    # required if tls.enabled
 
 resources:
   requests:

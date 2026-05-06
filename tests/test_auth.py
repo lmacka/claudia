@@ -5,10 +5,8 @@ Covers:
 - Passphrase wrong rejected.
 - Minimum-length enforcement (12 chars per design D5).
 - IPRateLimiter sliding-window enforcement.
-- KidAuthState file is mode 0600.
-
-v1 dev mode: no encryption, no KEK derivation. The passphrase is just
-a password. Encryption-coupled tests return at Step 11.
+- Auth file is mode 0600.
+- SessionStore persistence + expiry.
 """
 
 from __future__ import annotations
@@ -34,7 +32,7 @@ def test_set_and_verify_passphrase(tmp_path: Path) -> None:
 
 
 def test_min_length_rejected(tmp_path: Path) -> None:
-    """Passphrase < 12 chars rejected per /plan-eng-review D5 + design OQ3."""
+    """Passphrase < 12 chars rejected."""
     with pytest.raises(ValueError, match="12 characters"):
         auth_mod.set_passphrase(tmp_path, "short")
 
@@ -47,7 +45,7 @@ def test_verify_when_no_passphrase_set(tmp_path: Path) -> None:
 def test_passphrase_file_mode(tmp_path: Path) -> None:
     """Passphrase file should be 0600 (user-rw, no group/other)."""
     auth_mod.set_passphrase(tmp_path, "longenoughpassphrase")
-    path = auth_mod.kid_auth_path(tmp_path)
+    path = auth_mod.auth_path(tmp_path)
     mode = path.stat().st_mode & 0o777
     assert mode == 0o600, f"expected 0600, got {oct(mode)}"
 
@@ -66,8 +64,8 @@ def test_set_passphrase_change_works(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_new_kid_session_token_unique() -> None:
-    tokens = {auth_mod.new_kid_session_token() for _ in range(20)}
+def test_new_session_token_unique() -> None:
+    tokens = {auth_mod.new_session_token() for _ in range(20)}
     assert len(tokens) == 20  # all unique
     for t in tokens:
         # token_urlsafe(32) → ~43 char string
@@ -117,50 +115,49 @@ def test_rate_limiter_window_expiry() -> None:
 
 
 # ---------------------------------------------------------------------------
-# KidSessionStore — persistent kid login tokens
+# SessionStore — persistent login tokens
 # ---------------------------------------------------------------------------
 
 
-def test_kid_session_add_get_remove(tmp_path: Path) -> None:
-    store = auth_mod.KidSessionStore(tmp_path)
+def test_session_add_get_remove(tmp_path: Path) -> None:
+    store = auth_mod.SessionStore(tmp_path)
     assert store.get("nope") is None
-    store.add("token-a", "Jasper")
-    assert store.get("token-a") == "Jasper"
+    store.add("token-a", "Liam")
+    assert store.get("token-a") == "Liam"
     assert "token-a" in store
     store.remove("token-a")
     assert store.get("token-a") is None
     assert "token-a" not in store
 
 
-def test_kid_session_persists_across_restart(tmp_path: Path) -> None:
-    """The whole point: a pod restart must NOT log the kid out."""
-    s1 = auth_mod.KidSessionStore(tmp_path)
-    s1.add("token-restart", "Jasper")
-    s2 = auth_mod.KidSessionStore(tmp_path)
-    assert s2.get("token-restart") == "Jasper"
+def test_session_persists_across_restart(tmp_path: Path) -> None:
+    """A pod restart must NOT log the user out."""
+    s1 = auth_mod.SessionStore(tmp_path)
+    s1.add("token-restart", "Liam")
+    s2 = auth_mod.SessionStore(tmp_path)
+    assert s2.get("token-restart") == "Liam"
 
 
-def test_kid_session_expired_token_pruned(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    store = auth_mod.KidSessionStore(tmp_path)
-    store.add("token-old", "Jasper")
-    # Backdate the entry past TTL.
+def test_session_expired_token_pruned(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = auth_mod.SessionStore(tmp_path)
+    store.add("token-old", "Liam")
     real_ttl = auth_mod.COOKIE_TTL_SECONDS
     fake_now = time.time() + real_ttl + 60
     monkeypatch.setattr(auth_mod.time, "time", lambda: fake_now)
     assert store.get("token-old") is None
 
 
-def test_kid_session_file_mode_0600(tmp_path: Path) -> None:
-    store = auth_mod.KidSessionStore(tmp_path)
-    store.add("t", "Jasper")
+def test_session_file_mode_0600(tmp_path: Path) -> None:
+    store = auth_mod.SessionStore(tmp_path)
+    store.add("t", "Liam")
     mode = store.path.stat().st_mode & 0o777
     assert mode == 0o600
 
 
-def test_kid_session_load_skips_corrupt_entries(tmp_path: Path) -> None:
+def test_session_load_skips_corrupt_entries(tmp_path: Path) -> None:
     """Garbage in the file (or older format) shouldn't crash startup."""
     creds = tmp_path / ".credentials"
     creds.mkdir(parents=True)
-    (creds / "kid_sessions.json").write_text("not valid json", encoding="utf-8")
-    store = auth_mod.KidSessionStore(tmp_path)  # no exception
+    (creds / "sessions.json").write_text("not valid json", encoding="utf-8")
+    store = auth_mod.SessionStore(tmp_path)  # no exception
     assert store.get("anything") is None

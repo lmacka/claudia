@@ -1,9 +1,8 @@
 """SQLite connection + schema migrations for claudia.
 
-Per docs/storage-decision.md: SQLite holds the structured artifacts
-(sessions, events, audit sidecars, mood log, app feedback, library +
-people manifests, profile/setup/parent-name/kid-auth singletons). Blobs
-(library/*/raw.{ext}, kid-attach staging) stay on the filesystem.
+SQLite holds the structured artifacts (sessions, events, audit sidecars,
+mood log, app feedback, library + people manifests, kv singletons).
+Blobs (library/*/raw.{ext}) stay on the filesystem.
 
 Single file at /data/claudia.db, WAL journal mode, FK constraints on.
 

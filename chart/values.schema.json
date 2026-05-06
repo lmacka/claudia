@@ -1,15 +1,10 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "claudia Helm values",
-  "description": "Schema for claudia Helm chart values. Enforces the kid-mode safety floor non-disableably.",
+  "description": "Schema for claudia Helm chart values. Single-tenant, single-user-per-deploy.",
   "type": "object",
-  "required": ["mode", "displayName", "dob"],
+  "required": ["displayName", "dob"],
   "properties": {
-    "mode": {
-      "type": "string",
-      "enum": ["adult", "kid"],
-      "description": "IMMUTABLE post-install. Determines persona, safety floor, route surface, encryption."
-    },
     "displayName": {
       "type": "string",
       "minLength": 1,
@@ -29,67 +24,23 @@
       "enum": ["sage", "blush", "lavender", "amber", "contrast"],
       "default": "sage"
     },
-    "kid": {
+    "integrations": {
       "type": "object",
-      "description": "Only honoured when mode=kid. Safety subsection has non-disableable floors.",
       "properties": {
-        "parentDisplayName": {
-          "type": "string",
-          "default": "your parent",
-          "description": "Default name claudia uses for the parent in copy. Editable in-app at /setup/1 and /settings — the in-app value persists to /data/parent_display_name.txt and overrides this default."
-        },
-        "safety": {
+        "google": {
           "type": "object",
-          "properties": {
-            "haiku_classifier": {
-              "type": "boolean",
-              "const": true,
-              "description": "Non-disableable. Pre-turn safety classifier call. See docs/design.md Premise 3."
-            },
-            "no_anthropomorphism": {
-              "type": "boolean",
-              "const": true,
-              "description": "Non-disableable. Enforced via the kid system prompt (companion-kid.md): forbids streaks, romance, exclusivity, anti-parent secrecy. The const:true here promises the prompt-level rule is shipped; it is not a runtime gate."
-            }
-          },
-          "required": ["haiku_classifier", "no_anthropomorphism"]
-        },
-        "encryption": {
-          "type": "object",
+          "description": "Gmail + Google Calendar tool integration. Opt-in; default off.",
           "properties": {
             "enabled": {
               "type": "boolean",
-              "default": true,
-              "description": "v1 dev mode: defaults to true but is NOT enforced by the app. At-rest encryption is deferred to Step 11 (see docs/build-plan-v1.md). v1.5 will re-pin this to const: true via schema migration. Do NOT promise privacy on v1 deploys."
-            }
-          },
-          "required": ["enabled"]
-        }
-      }
-    },
-    "adult": {
-      "type": "object",
-      "description": "Only honoured when mode=adult. Ignored in kid mode.",
-      "properties": {
-        "integrations": {
-          "type": "object",
-          "properties": {
-            "google": {
+              "default": false
+            },
+            "secretRef": {
               "type": "object",
-              "description": "Gmail + Google Calendar tool integration. Opt-in; default off. Kid mode never honours this — gated at registry, not just here.",
               "properties": {
-                "enabled": {
-                  "type": "boolean",
-                  "default": false
-                },
-                "secretRef": {
-                  "type": "object",
-                  "properties": {
-                    "name": { "type": "string" },
-                    "clientIdKey": { "type": "string", "default": "client-id" },
-                    "clientSecretKey": { "type": "string", "default": "client-secret" }
-                  }
-                }
+                "name": { "type": "string" },
+                "clientIdKey": { "type": "string", "default": "client-id" },
+                "clientSecretKey": { "type": "string", "default": "client-secret" }
               }
             }
           }
@@ -107,8 +58,7 @@
     "model": {
       "type": "object",
       "properties": {
-        "primary": { "type": "string", "default": "claude-sonnet-4-6" },
-        "classifier": { "type": "string", "default": "claude-haiku-4-5" }
+        "primary": { "type": "string", "default": "claude-sonnet-4-6" }
       }
     },
     "pvc": {
@@ -133,21 +83,5 @@
         }
       }
     }
-  },
-  "allOf": [
-    {
-      "if": {
-        "properties": { "mode": { "const": "kid" } }
-      },
-      "then": {
-        "required": ["kid", "basicAuth"],
-        "properties": {
-          "kid": {
-            "required": ["safety", "encryption"]
-          }
-        },
-        "description": "Kid mode requires basicAuth (parent-admin password) at install time. Adult mode collects credentials in /setup/2 instead — basicAuth is optional there."
-      }
-    }
-  ]
+  }
 }

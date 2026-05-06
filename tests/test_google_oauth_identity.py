@@ -98,7 +98,6 @@ def test_exchange_code_invalid_state_raises(tmp_path: Path) -> None:
 @pytest.fixture
 def adult_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setenv("CLAUDIA_OPS_MODE", "dev")
-    monkeypatch.setenv("CLAUDIA_MODE", "adult")
     monkeypatch.setenv("CLAUDIA_DATA_ROOT", str(tmp_path))
     monkeypatch.setenv(
         "CLAUDIA_PROMPTS_DIR",
@@ -113,7 +112,7 @@ def adult_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     # Adult passphrase set so the wizard isn't intercepting routes.
     from app import auth as auth_mod
 
-    auth_mod.set_passphrase(tmp_path, "longenoughpassword", role="adult")
+    auth_mod.set_passphrase(tmp_path, "longenoughpassword")
     db_kv.kv_set(tmp_path, "setup_completed_at", "test-fixture")
     (tmp_path / "context").mkdir(parents=True, exist_ok=True)
 
@@ -148,7 +147,7 @@ def test_oauth_callback_identity_first_bind_issues_cookie(
     # Email is now bound
     assert db_kv.kv_get(tmp_path, KV_GOOGLE_IDENTITY_EMAIL) == "liam@example.com"
     # Cookie is set
-    assert "claudia-adult" in r.cookies
+    assert "claudia" in r.cookies
 
 
 def test_oauth_callback_identity_mismatch_rejected(
@@ -166,7 +165,7 @@ def test_oauth_callback_identity_mismatch_rejected(
     assert r.status_code == 403, r.text
     assert "bound to liam@example.com" in r.text
     # No cookie issued
-    assert "claudia-adult" not in r.cookies
+    assert "claudia" not in r.cookies
     # Bound email unchanged
     assert db_kv.kv_get(tmp_path, KV_GOOGLE_IDENTITY_EMAIL) == "liam@example.com"
 
@@ -184,7 +183,7 @@ def test_oauth_callback_identity_match_issues_cookie(
             follow_redirects=False,
         )
     assert r.status_code == 303
-    assert "claudia-adult" in r.cookies
+    assert "claudia" in r.cookies
 
 
 def test_oauth_callback_tool_only_renders_success_template(
@@ -225,7 +224,6 @@ def test_auth_google_start_400_when_creds_missing(
 ) -> None:
     """Without Google client creds, /auth/google/start should refuse."""
     monkeypatch.setenv("CLAUDIA_OPS_MODE", "dev")
-    monkeypatch.setenv("CLAUDIA_MODE", "adult")
     monkeypatch.setenv("CLAUDIA_DATA_ROOT", str(tmp_path))
     monkeypatch.setenv(
         "CLAUDIA_PROMPTS_DIR",

@@ -28,10 +28,10 @@ Whenever you describe an event involving another person:
 2. If a name doesn't appear in the spine for that event, write "(recipient
    not specified in source)" rather than guessing.
 3. **Never assume the most-frequently-mentioned name in the transcripts is
-   the relevant one.** Specifically: Jasper is the dominant topic of most
-   sessions, but events involving Rhi, Trisha, Bri, Adam, Russ, Nicole and
-   others are routinely discussed without re-naming them. Default-to-Jasper
-   is a known failure mode for this report.
+   the relevant one.** Some people get talked about every session and others
+   come up rarely; events involving rarely-mentioned people are often
+   discussed without re-naming them. Default-to-the-dominant-name is a
+   known failure mode for this report.
 
 If the spine and the transcripts disagree on a fact, **the spine wins**.
 

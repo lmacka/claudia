@@ -35,17 +35,6 @@
     <small class="muted">DOB stored, not age — age stays accurate over time.</small>
   </section>
 
-  {% if claudia_mode == "kid" %}
-  <section class="panel">
-    <h3>What should claudia call you when talking to {{ cfg_display_name or "your kid" }}?</h3>
-    <p class="muted"><small>Used in copy like "{{ cfg_parent_display_name }} can ask me for a summary." Pick whatever's true and unloaded — your first name, "stepmum", "dad", "your parent". You can change this later in /settings.</small></p>
-    <label for="parent_display_name" class="visually-hidden">parent display name</label>
-    <input type="text" id="parent_display_name" name="parent_display_name"
-           value="{{ data.parent_display_name or cfg_parent_display_name }}"
-           placeholder="your parent" maxlength="60" style="max-width: 320px;">
-  </section>
-  {% endif %}
-
   <section class="panel">
     <h3>Where are you?</h3>
     <p class="muted"><small>Used for time zone, crisis-line numbers, and "now" awareness in chat.</small></p>
@@ -80,15 +69,6 @@
     <textarea id="additional_instructions" name="additional_instructions"
               rows="5" placeholder="e.g. Don't moralise. Push back when I'm catastrophising. Skip the validation phrasing."
               style="width: 100%; max-width: 720px;">{{ current_instructions or '' }}</textarea>
-  </section>
-
-  <section class="panel" style="opacity: 0.5;">
-    <h3>Kid mode</h3>
-    <p class="muted"><small>Kid mode runs a different prompt + safety floor for a kid user, with a separate parent-admin login. Set at deploy time via the Helm chart's <code>mode</code> value. Runtime toggle planned for v0.9.</small></p>
-    <label>
-      <input type="checkbox" disabled title="set at deploy time, runtime toggle in v0.9">
-      enable kid mode
-    </label>
   </section>
 
   <p style="margin-top: 18px;">

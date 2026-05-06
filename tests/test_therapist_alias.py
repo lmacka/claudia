@@ -66,14 +66,13 @@ def test_alias_directive_strips_whitespace(tmp_path: Path) -> None:
 
 
 def _adult_loader_with_instructions(tmp_path: Path, instructions: str) -> ContextLoader:
-    """Build an adult ContextLoader with a fixed additional-instructions
-    provider returning `instructions`. Companion prompt is read from the
-    real prompts dir so we exercise the assemble path end-to-end."""
+    """Build a ContextLoader with a fixed additional-instructions provider
+    returning `instructions`. Companion prompt is read from the real prompts
+    dir so we exercise the assemble path end-to-end."""
     prompts_dir = Path(__file__).resolve().parents[1] / "app" / "prompts"
     return ContextLoader(
         data_root=tmp_path,
         prompts_dir=prompts_dir,
-        mode="adult",
         display_name="Liam",
         additional_instructions_provider=lambda: instructions,
     )
@@ -94,21 +93,6 @@ def test_additional_instructions_skipped_when_empty(tmp_path: Path) -> None:
     assert "Additional instructions from the user" not in blocks.block1
 
 
-def test_additional_instructions_skipped_in_kid_mode(tmp_path: Path) -> None:
-    """Kid prompts are parent-controlled at deploy time; the in-app
-    /settings additional-instructions should never bleed into kid mode."""
-    prompts_dir = Path(__file__).resolve().parents[1] / "app" / "prompts"
-    loader = ContextLoader(
-        data_root=tmp_path,
-        prompts_dir=prompts_dir,
-        mode="kid",
-        display_name="Jasper",
-        additional_instructions_provider=lambda: "should not appear",
-    )
-    blocks = loader.assemble()
-    assert "should not appear" not in blocks.block1
-
-
 def test_additional_instructions_provider_exception_safe(tmp_path: Path) -> None:
     """If the provider raises, the assemble shouldn't bring the whole
     request down — the user-tunable extras are non-essential."""
@@ -120,7 +104,6 @@ def test_additional_instructions_provider_exception_safe(tmp_path: Path) -> None
     loader = ContextLoader(
         data_root=tmp_path,
         prompts_dir=prompts_dir,
-        mode="adult",
         display_name="Liam",
         additional_instructions_provider=boom,
     )
@@ -136,7 +119,6 @@ def test_additional_instructions_provider_exception_safe(tmp_path: Path) -> None
 @pytest.fixture
 def adult_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setenv("CLAUDIA_OPS_MODE", "local")
-    monkeypatch.setenv("CLAUDIA_MODE", "adult")
     monkeypatch.setenv("CLAUDIA_DATA_ROOT", str(tmp_path))
     monkeypatch.setenv(
         "CLAUDIA_PROMPTS_DIR",

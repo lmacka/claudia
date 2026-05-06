@@ -1,14 +1,8 @@
-"""Tiny key-value singleton store (T-NEW-I phase 4).
+"""Tiny key-value singleton store.
 
-Replaces the ad-hoc per-file singletons that grew up alongside the app:
-  /data/parent_display_name.txt    →  kv_get('parent_display_name')
-  /data/google_enabled.txt         →  kv_get('google_enabled')
-  /data/.setup_complete            →  kv_get('setup_completed_at')
-  /data/.setup_state.json          →  kv_get('setup_wizard_state')
-
-Sensitive credentials (.credentials/kid_auth.json, kid_sessions.json,
-google_oauth_token.json) stay on disk with mode 0600 — they move into
-the DB at v1.5 once SQLCipher (or a key-wrap layer) is in place.
+Used for app-level singletons (setup wizard state, google_enabled toggle,
+runtime credential overrides). Sensitive credentials (auth.json,
+sessions.json, google_oauth_token.json) stay on disk with mode 0600.
 
 Bytes-level interface: callers pass strings, we store strings. Anything
 JSON-shaped is the caller's responsibility to serialise.

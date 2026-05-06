@@ -1,6 +1,6 @@
-# Example values for an adult-mode claudia deploy (v0.8+).
+# Example values for a claudia deploy.
 #
-# v0.8 captures all credentials in the in-app /setup wizard the first time
+# All credentials are captured in the in-app /setup wizard the first time
 # you open the URL. No Secrets need to exist before you `helm install`.
 #
 # Pre-requisites:
@@ -9,7 +9,7 @@
 #
 # Install:
 #   helm install claudia oci://ghcr.io/lmacka/claudia \
-#     --version 0.8.0 \
+#     --version 0.9.0 \
 #     --values examples/adult-values.yaml \
 #     --namespace claudia --create-namespace
 #
@@ -19,8 +19,7 @@
 #
 # OPTIONAL — pre-bootstrap from Helm Secrets instead of the wizard.
 # Useful for SOPS/Vault-managed secrets. When set, env-mounted values
-# WIN over /settings edits (decision 8 of v0.8 plan) so the UI fields
-# render read-only with a tooltip.
+# WIN over /settings edits so the UI fields render read-only.
 #
 #   anthropicSecretRef:
 #     name: anthropic-api-key
@@ -30,8 +29,6 @@
 #       name: claudia-auth
 #       key: password
 
-mode: adult
-
 displayName: "Liam"
 dob: "1985-02-14"
 country: "AU"
@@ -40,18 +37,16 @@ theme: sage
 
 # Gmail + Calendar tools are OFF by default. Toggle in /settings after
 # completing setup, OR pre-configure here:
-# adult:
-#   integrations:
-#     google:
-#       enabled: true
-#       secretRef:           # OPTIONAL — credentials can also come from /settings
-#         name: google-oauth
-#         clientIdKey: client-id
-#         clientSecretKey: client-secret
+# integrations:
+#   google:
+#     enabled: true
+#     secretRef:           # OPTIONAL — credentials can also come from /settings
+#       name: google-oauth
+#       clientIdKey: client-id
+#       clientSecretKey: client-secret
 
 model:
   primary: claude-sonnet-4-6
-  classifier: claude-haiku-4-5
 
 pvc:
   size: 10Gi

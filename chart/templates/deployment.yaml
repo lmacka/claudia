@@ -15,7 +15,6 @@ spec:
     metadata:
       labels:
         {{- include "claudia.selectorLabels" . | nindent 8 }}
-        claudia.lmacka.io/mode: {{ .Values.mode | quote }}
     spec:
       {{- with .Values.image.pullSecrets }}
       imagePullSecrets:
@@ -43,8 +42,6 @@ spec:
               value: /data
             - name: CLAUDIA_DEFAULT_MODEL
               value: {{ .Values.model.primary | quote }}
-            - name: CLAUDIA_MODE
-              value: {{ .Values.mode | quote }}
             - name: CLAUDIA_DISPLAY_NAME
               value: {{ .Values.displayName | quote }}
             - name: CLAUDIA_DOB
@@ -55,28 +52,11 @@ spec:
               value: {{ .Values.theme | quote }}
             - name: CLAUDIA_INGRESS_HOST
               value: {{ .Values.ingress.host | quote }}
-            - name: CLAUDIA_MODEL_PRIMARY
-              value: {{ .Values.model.primary | quote }}
-            - name: CLAUDIA_MODEL_CLASSIFIER
-              value: {{ .Values.model.classifier | quote }}
-            {{- if eq .Values.mode "kid" }}
-            - name: CLAUDIA_KID_PARENT_DISPLAY_NAME
-              value: {{ .Values.kid.parentDisplayName | quote }}
-            - name: CLAUDIA_KID_SAFETY_HAIKU_CLASSIFIER
-              value: "true"
-            - name: CLAUDIA_KID_SAFETY_NO_ANTHROPOMORPHISM
-              value: "true"
-            - name: CLAUDIA_KID_ENCRYPTION_ENABLED
-              value: "true"
-            {{- end }}
-            {{- if eq .Values.mode "adult" }}
-            - name: CLAUDIA_ADULT_INTEGRATIONS_GOOGLE_ENABLED
-              value: {{ ((.Values.adult).integrations).google.enabled | default false | quote }}
-            {{- end }}
-            {{- /* v0.8: secret-mounted credentials are now optional. The
-                in-app /setup wizard captures credentials when these blocks
-                are absent. Env-mounted values stay authoritative when
-                present (decision 8). */}}
+            - name: CLAUDIA_INTEGRATIONS_GOOGLE_ENABLED
+              value: {{ ((.Values.integrations).google).enabled | default false | quote }}
+            {{- /* Optional Helm Secret bootstraps. Otherwise the in-app /setup
+                wizard captures credentials. Env-mounted values stay
+                authoritative when present. */}}
             {{- if .Values.anthropicSecretRef }}
             - name: ANTHROPIC_API_KEY
               valueFrom:
@@ -84,34 +64,24 @@ spec:
                   name: {{ .Values.anthropicSecretRef.name }}
                   key: {{ .Values.anthropicSecretRef.key }}
             {{- end }}
-            {{- if and (eq .Values.mode "kid") .Values.basicAuth }}
+            {{- if and .Values.basicAuth (.Values.basicAuth).passwordSecretRef }}
             - name: BASIC_AUTH_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.basicAuth.passwordSecretRef.name }}
                   key: {{ .Values.basicAuth.passwordSecretRef.key }}
             {{- end }}
-            {{- /* Adult mode: only mount basicAuth Secret if the operator
-                explicitly set it. Otherwise the user picks their password
-                in /setup/2 and it's stored in kv_store on the PVC. */}}
-            {{- if and (eq .Values.mode "adult") .Values.basicAuth (.Values.basicAuth).passwordSecretRef }}
-            - name: BASIC_AUTH_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.basicAuth.passwordSecretRef.name }}
-                  key: {{ .Values.basicAuth.passwordSecretRef.key }}
-            {{- end }}
-            {{- if and (eq .Values.mode "adult") (((.Values.adult).integrations).google).enabled (((.Values.adult).integrations).google).secretRef }}
+            {{- if and ((.Values.integrations).google).enabled (((.Values.integrations).google).secretRef) }}
             - name: GOOGLE_OAUTH_CLIENT_ID
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.adult.integrations.google.secretRef.name }}
-                  key: {{ .Values.adult.integrations.google.secretRef.clientIdKey | default "client-id" }}
+                  name: {{ .Values.integrations.google.secretRef.name }}
+                  key: {{ .Values.integrations.google.secretRef.clientIdKey | default "client-id" }}
             - name: GOOGLE_OAUTH_CLIENT_SECRET
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.adult.integrations.google.secretRef.name }}
-                  key: {{ .Values.adult.integrations.google.secretRef.clientSecretKey | default "client-secret" }}
+                  name: {{ .Values.integrations.google.secretRef.name }}
+                  key: {{ .Values.integrations.google.secretRef.clientSecretKey | default "client-secret" }}
             - name: GOOGLE_OAUTH_REDIRECT_URI
               value: "https://{{ .Values.ingress.host }}/oauth/callback"
             {{- end }}

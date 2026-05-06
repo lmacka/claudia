@@ -5,25 +5,10 @@
 <nav class="nav" aria-label="primary">
   <a href="/" class="brand">claudia</a>
   <span class="spacer"></span>
-  {% if claudia_mode == "kid" %}
-    <details class="kebab">
-      <summary aria-label="More options" aria-haspopup="menu">···</summary>
-      <ul role="menu">
-        <li role="none"><a role="menuitem" href="/help">real people who can help</a></li>
-        <li role="none"><a role="menuitem" href="/settings" aria-current="page">settings</a></li>
-        <li role="none">
-          <form method="post" action="/logout" style="margin:0;">
-            <button type="submit" role="menuitem">log out</button>
-          </form>
-        </li>
-      </ul>
-    </details>
-  {% else %}
-    <a href="/library">library</a>
-    <a href="/people">people</a>
-    <a href="/report">report</a>
-    <a href="/settings" aria-current="page">settings</a>
-  {% endif %}
+  <a href="/library">library</a>
+  <a href="/people">people</a>
+  <a href="/report">report</a>
+  <a href="/settings" aria-current="page">settings</a>
 </nav>
 
 <h1>settings</h1>
@@ -78,7 +63,6 @@
   </script>
 </section>
 
-{% if claudia_mode == "adult" %}
 <section class="panel">
   <h2>What should claudia call itself?</h2>
   <p class="muted"><small>Default is "claudia". If you set something else here, the bot will say "you can call me {your-name}" once at the start of every new session. Doesn't change the product name anywhere else. Saved immediately.</small></p>
@@ -131,27 +115,11 @@
     {% endif %}
   {% endif %}
 </section>
-{% endif %}
-
-{% if claudia_mode == "kid" %}
-<section class="panel">
-  <h2>parent name (how claudia refers to you)</h2>
-  <p class="muted"><small>Used in copy to {{ display_name or "your kid" }} like "{{ parent_display_name }} can ask me for a summary." Pick whatever's true and unloaded — saved immediately.</small></p>
-  <form method="post" action="/settings/parent-name">
-    <label for="parent_display_name" class="visually-hidden">parent display name</label>
-    <input type="text" id="parent_display_name" name="parent_display_name"
-           value="{{ parent_display_name }}" placeholder="your parent" maxlength="60"
-           style="max-width: 320px;">
-    <button type="submit" class="primary">save</button>
-  </form>
-</section>
-{% endif %}
 
 <section class="panel">
   <h2>about</h2>
-  <p class="muted"><small>Application + chart versions and where this instance lives.</small></p>
+  <p class="muted"><small>Where this instance lives.</small></p>
   <ul style="list-style: none; padding-left: 0; margin: 0;">
-    <li><strong>mode:</strong> {{ claudia_mode }}</li>
     <li><strong>display name:</strong> {{ display_name or "(unset)" }}</li>
   </ul>
 </section>

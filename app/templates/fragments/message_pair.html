@@ -1,7 +1,6 @@
 {# HTMX fragment: appended after each user message. #}
-{% set _user_label = (display_name or "you") if claudia_mode == "kid" else "you" %}
 <article class="msg user">
-  <div class="who">{{ _user_label }}</div>
+  <div class="who">you</div>
   <div class="msg-body">{{ user_message.content }}</div>
 </article>
 <article class="msg bot">

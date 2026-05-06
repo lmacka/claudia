@@ -1,11 +1,10 @@
 {# Full messages list fragment. While `polling`, the spinner row self-polls. #}
 <section id="messages" class="messages">
-  {% set _user_label = (display_name or "you") if claudia_mode == "kid" else "you" %}
   {% for m in messages %}
     {% if m.content %}
       {% if m.role == "user" %}
         <article class="msg user">
-          <div class="who">{{ _user_label }}</div>
+          <div class="who">you</div>
           <div class="msg-body">{{ m.content }}</div>
         </article>
       {% elif m.role == "assistant" %}

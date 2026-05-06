@@ -2,7 +2,7 @@
 Context pack loader + system prompt assembler.
 
 Block 1 (cached, stable):
-    companion-{adult|kid}.md + 01_background.md + optional additional
+    companion-adult.md + 01_background.md + optional additional
     instructions appended at assemble time
 Block 2 (cached, rotates):
     library index (rendered from Library.render_index_md via provider)
@@ -40,10 +40,7 @@ class ContextLoader:
         self,
         data_root: Path,
         prompts_dir: Path,
-        mode: str = "adult",
         display_name: str = "",
-        kid_parent_display_name: str = "your parent",
-        kid_parent_display_name_provider=None,
         people_md_provider=None,
         additional_instructions_provider=None,
         library_index_provider=None,
@@ -52,40 +49,16 @@ class ContextLoader:
         self.data_root = data_root
         self.prompts_dir = prompts_dir
         self.context_dir = data_root / "context"
-        self.mode = mode
         self.display_name = display_name
-        # Either a static value (back-compat for tests) or a callable returning
-        # the value at assemble time. The callable form lets file-backed
-        # overrides apply without recreating the loader.
-        self._kid_parent_display_name_static = kid_parent_display_name
-        self._kid_parent_display_name_provider = kid_parent_display_name_provider
-        # Callable[[], str] returning the rendered people roster, or None.
-        # Concatenated under INDEX.md in block 2 when present.
         self._people_md_provider = people_md_provider
         # Callable[[], str] returning the user's additional instructions
         # (set in /setup/3 or /settings, persisted in kv_store). When
-        # non-empty, appended to the companion prompt under a clear heading
-        # so the user's overrides are scoped + visible to anyone reading
-        # the assembled prompt for debugging.
+        # non-empty, appended to the companion prompt under a clear heading.
         self._additional_instructions_provider = additional_instructions_provider
         # Callable[[], str] returning the rendered library index (markdown).
-        # Wired to Library.render_index_md(). Used by Block 2 instead of
-        # the legacy on-disk INDEX.md (which nothing writes anymore).
         self._library_index_provider = library_index_provider
         # Callable[[], str] returning recent same-day transcripts (markdown).
-        # Wired to a SqliteSessionStore-backed helper. Used by Block 3
-        # instead of the legacy data_root/sessions/*.jsonl glob (which is
-        # always empty since the SQLite migration).
         self._same_day_transcripts_provider = same_day_transcripts_provider
-
-    @property
-    def kid_parent_display_name(self) -> str:
-        if self._kid_parent_display_name_provider is not None:
-            try:
-                return self._kid_parent_display_name_provider() or self._kid_parent_display_name_static
-            except Exception:  # noqa: BLE001
-                return self._kid_parent_display_name_static
-        return self._kid_parent_display_name_static
 
     def _read(self, path: Path) -> str:
         try:
@@ -122,8 +95,6 @@ class ContextLoader:
 
 
     def _app_feedback_tail(self, max_bytes: int = 2048) -> str:
-        # T-NEW-I: app feedback now lives in SQLite. Falls back to "" if the
-        # DB doesn't exist yet (fresh install before any session ended).
         try:
             from app.db_audit import app_feedback_tail
 
@@ -133,25 +104,13 @@ class ContextLoader:
             return ""
 
     def assemble(self, frame_tag: str = "") -> SystemPromptBlocks:
-        # Block 1 — stable, cached. Mode picks which companion prompt loads
-        # (companion-adult.md vs companion-kid.md) plus which context files
-        # are included. Kid mode uses a smaller, more targeted context set.
-        companion_file = f"companion-{self.mode}.md"
-        companion = self._read(self.prompts_dir / companion_file)
+        # Block 1 — stable, cached.
+        companion = self._read(self.prompts_dir / "companion-adult.md")
 
-        # Substitute display-name placeholders in the kid prompt so the model
-        # knows what to call the kid and how to refer to the parent.
-        if self.mode == "kid":
-            companion = (
-                companion
-                .replace("{{DISPLAY_NAME}}", self.display_name or "the kid")
-                .replace("{{PARENT_DISPLAY_NAME}}", self.kid_parent_display_name)
-            )
-
-        # Append user's free-form additional instructions (v0.8 phase B).
-        # Adult-mode only; kid prompts shouldn't be user-overridable since
-        # the parent admin already controls deploy-level config.
-        if self.mode == "adult" and self._additional_instructions_provider is not None:
+        # Append user's free-form additional instructions (set in /setup/3
+        # or /settings). When non-empty, scoped under a clear heading so
+        # overrides are visible to anyone reading the assembled prompt.
+        if self._additional_instructions_provider is not None:
             try:
                 extra = (self._additional_instructions_provider() or "").strip()
             except Exception:  # noqa: BLE001
@@ -163,23 +122,14 @@ class ContextLoader:
                     + extra
                 )
 
-        if self.mode == "kid":
-            # Kid mode: minimal context. The parent has typically just
-            # populated context/01_background.md; the rest of the adult-mode
-            # files don't apply.
-            stable_files = [
-                "01_background.md",
-                "04_relationship_map.md",
-            ]
-        else:
-            stable_files = [
-                "SKILL.md",
-                "01_background.md",
-                "02_patterns.md",
-                "03_therapy_history.md",
-                "04_relationship_map.md",
-                "06_interpretive_notes.md",
-            ]
+        stable_files = [
+            "SKILL.md",
+            "01_background.md",
+            "02_patterns.md",
+            "03_therapy_history.md",
+            "04_relationship_map.md",
+            "06_interpretive_notes.md",
+        ]
 
         stable_parts = [f"# COMPANION PROMPT\n\n{companion}"]
         for name in stable_files:
@@ -187,10 +137,8 @@ class ContextLoader:
             if content:
                 stable_parts.append(f"# {name}\n\n{content}")
 
-        # Frame-tag dispatch (per /plan-eng-review D9): kid action buttons
-        # post a `frame=<tag>` along with their message. The companion prompt
-        # has tag-keyed behaviour blocks; we just inject the active tag here
-        # so the model sees it as part of its system context.
+        # Frame tag plumbing kept for callers that pass one in; today no UI
+        # surfaces frame buttons, so this is essentially a no-op.
         if frame_tag:
             stable_parts.append(
                 f"# ACTIVE FRAME\n\n"
@@ -201,9 +149,6 @@ class ContextLoader:
         block1 = "\n\n---\n\n".join(stable_parts)
 
         # Block 2 — rotated. Library index + people roster.
-        # Library.render_index_md returns markdown that already includes the
-        # `# INDEX.md` header. When no provider is wired (a few tests), the
-        # block renders the empty placeholder.
         rendered_index = ""
         if self._library_index_provider is not None:
             try:

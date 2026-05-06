@@ -147,36 +147,6 @@ code { font-family: ui-monospace, monospace; font-size: 0.92em; background: var(
 .nav a:hover { color: var(--accent); text-decoration: none; }
 .nav .spacer { flex: 1; }
 
-/* "kebab" overflow menu — pure HTML <details>, no JS. */
-.kebab { position: relative; }
-.kebab summary {
-  list-style: none; cursor: pointer;
-  min-width: 44px; min-height: 44px;
-  display: inline-flex; align-items: center; justify-content: center;
-  border: 1px solid var(--border); border-radius: 3px;
-  background: var(--panel-2); color: var(--text-dim);
-  font-size: 18px; line-height: 1;
-}
-.kebab summary::-webkit-details-marker { display: none; }
-.kebab summary:hover { color: var(--accent); border-color: var(--accent); }
-.kebab[open] > ul {
-  position: absolute; right: 0; top: calc(100% + 4px);
-  min-width: 220px; z-index: 50;
-  background: var(--panel); border: 1px solid var(--border);
-  border-radius: 4px; padding: 4px 0; margin: 0;
-  list-style: none;
-  box-shadow: 0 6px 24px rgba(0,0,0,0.35);
-}
-.kebab ul li { margin: 0; }
-.kebab ul a, .kebab ul button {
-  display: block; width: 100%;
-  padding: 10px 14px; min-height: 44px;
-  color: var(--text); background: transparent;
-  border: 0; text-align: left;
-  font: inherit; cursor: pointer; text-decoration: none;
-}
-.kebab ul a:hover, .kebab ul button:hover { background: var(--panel-2); color: var(--accent); text-decoration: none; }
-
 /* ---------------- PANELS ---------------- */
 .panel { border: 1px solid var(--border); border-radius: 5px; padding: 14px; margin: 12px 0; background: var(--panel); }
 .panel h2 { margin-top: 0; font-size: 17px; }
@@ -354,7 +324,7 @@ th { font-size: 11px; color: var(--text-dim); text-transform: uppercase; font-we
   font-family: ui-monospace, monospace; border: 1px solid var(--border);
 }
 
-/* Adult-mode end-of-session mood capture — replaces .compose. Kid mode does NOT use this. */
+/* End-of-session mood capture — replaces .compose. */
 .mood-end-panel {
   position: sticky; bottom: 0;
   background: var(--bg);
@@ -383,24 +353,6 @@ th { font-size: 11px; color: var(--text-dim); text-transform: uppercase; font-we
 .diff-card .verb.add { color: var(--ok); border-color: var(--ok); }
 .diff-card h4 { margin: 6px 0; font-size: 14px; color: var(--text); }
 .diff-card .actions { margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap; }
-
-/* ---------------- TILES (admin home) ---------------- */
-.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin: 14px 0; }
-.tile {
-  border: 1px solid var(--border); background: var(--panel);
-  padding: 16px; border-radius: 5px;
-  text-decoration: none; color: var(--text);
-  display: block;
-}
-.tile:hover { border-color: var(--accent); text-decoration: none; }
-.tile h3 { margin: 0 0 6px; color: var(--accent); }
-.tile p { margin: 0; color: var(--text-dim); font-size: 13px; }
-.tile.muted-tile { opacity: 0.55; }
-.tile .badge {
-  float: right; font-size: 11px; padding: 2px 7px;
-  background: var(--accent-soft); color: var(--accent);
-  border-radius: 10px; border: 1px solid var(--accent);
-}
 
 /* ---------------- STEP INDICATOR (setup wizard) ---------------- */
 .steps { display: flex; gap: 4px; margin: 8px 0 24px; flex-wrap: wrap; }
@@ -461,10 +413,6 @@ th { font-size: 11px; color: var(--text-dim); text-transform: uppercase; font-we
   border-radius: 4px;
 }
 .empty-state p { margin: 4px 0; }
-
-/* ---------------- KID FIRST CHAT ---------------- */
-.firstchat-bullets { line-height: 1.7; padding-left: 22px; margin: 8px 0; }
-.firstchat-bullets li { margin-bottom: 8px; }
 
 /* ---------------- HTMX INDICATOR ---------------- */
 .htmx-indicator { display: none; }

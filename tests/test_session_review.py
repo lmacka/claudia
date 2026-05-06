@@ -10,9 +10,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 
-def _build_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str = "adult"):
+def _build_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("CLAUDIA_OPS_MODE", "local")
-    monkeypatch.setenv("CLAUDIA_MODE", mode)
     monkeypatch.setenv("CLAUDIA_DATA_ROOT", str(tmp_path))
     monkeypatch.setenv(
         "CLAUDIA_PROMPTS_DIR",
@@ -40,16 +39,6 @@ def test_review_404_for_unknown_session(
     main_module = _build_app(tmp_path, monkeypatch)
     with TestClient(main_module.app) as c:
         r = c.get("/session/does-not-exist/review")
-        assert r.status_code == 404
-
-
-def test_review_404_in_kid_mode(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    main_module = _build_app(tmp_path, monkeypatch, mode="kid")
-    with TestClient(main_module.app) as c:
-        sid = _create_session(c)
-        r = c.get(f"/session/{sid}/review")
         assert r.status_code == 404
 
 

@@ -1,9 +1,9 @@
-"""Tests for the v0.8 5-step setup wizard + first-run gate + auto-mark.
+"""Tests for the 5-step setup wizard + first-run gate + auto-mark.
 
 Wizard shape:
   Step 1: Anthropic API key (with live validation)
   Step 2: Auth method (password OR Google OAuth)
-  Step 3: Profile + model + custom instructions + (disabled) kid-mode toggle
+  Step 3: Profile + model + custom instructions
   Step 4: Library import (inline) + 4 profile textareas + auto-draft
   Step 5: Recap + theme + therapist name → commit (writes 01_background.md)
 
@@ -21,12 +21,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 
-def _build_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str = "adult"):
+def _build_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("CLAUDIA_OPS_MODE", "local")
-    monkeypatch.setenv("CLAUDIA_MODE", mode)
     monkeypatch.setenv("CLAUDIA_DATA_ROOT", str(tmp_path))
-    monkeypatch.setenv("CLAUDIA_DISPLAY_NAME", "Liam" if mode == "adult" else "Jasper")
-    monkeypatch.setenv("CLAUDIA_KID_PARENT_DISPLAY_NAME", "Liam")
+    monkeypatch.setenv("CLAUDIA_DISPLAY_NAME", "Liam")
     monkeypatch.setenv(
         "CLAUDIA_PROMPTS_DIR",
         str(Path(__file__).resolve().parents[1] / "app" / "prompts"),
@@ -205,7 +203,6 @@ def test_setup_step3_renders(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
         assert "date of birth" in r.text
         assert "Sonnet" in r.text  # model dropdown
         assert "Additional instructions" in r.text
-        assert "kid mode" in r.text.lower()  # disabled toggle
 
 
 def test_setup_step3_persists_profile_and_model(
@@ -352,18 +349,6 @@ def test_setup_step5_alias_default_claudia_clears_kv(
         c.post("/setup/4", data={"section_who": "test"})
         c.post("/setup/5", data={"theme": "sage", "therapist_alias": "claudia"})
         assert not kv_exists(tmp_path, main_module.runtime_config_mod.KV_THERAPIST_ALIAS)
-
-
-def test_setup_step5_kid_mode_lands_on_admin(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    main_module = _build_client(tmp_path, monkeypatch, mode="kid")
-    with TestClient(main_module.app) as c:
-        c.post("/setup/3", data={"preferred_name": "Jasper", "dob": "2010-09-22", "country": "AU"})
-        c.post("/setup/4", data={"section_who": "15yo autistic kid"})
-        r = c.post("/setup/5", data={"theme": "sage"}, follow_redirects=False)
-        assert r.status_code == 303
-        assert r.headers["location"] == "/admin"
 
 
 # ---------------------------------------------------------------------------

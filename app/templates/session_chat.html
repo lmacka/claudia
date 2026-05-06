@@ -5,20 +5,6 @@
 <nav class="nav session-header" aria-label="chat">
   <a href="/" aria-label="back to home">&larr; home</a>
   <span class="spacer"></span>
-  {% if claudia_mode == "kid" %}
-    <details class="kebab">
-      <summary aria-label="More options" aria-haspopup="menu">···</summary>
-      <ul role="menu">
-        <li role="none"><a role="menuitem" href="/help">real people who can help</a></li>
-        <li role="none"><a role="menuitem" href="/settings">settings</a></li>
-        <li role="none">
-          <form method="post" action="/logout" style="margin:0;">
-            <button type="submit" role="menuitem">log out</button>
-          </form>
-        </li>
-      </ul>
-    </details>
-  {% endif %}
 </nav>
 
 {% set _has_visible = messages | selectattr('content') | first is defined %}
@@ -32,7 +18,7 @@
     {% if m.content %}
       {% if m.role == "user" %}
         <article class="msg user">
-          <div class="who">{{ display_name if claudia_mode == "kid" else "you" }}</div>
+          <div class="who">you</div>
           <div class="msg-body">{{ m.content }}</div>
         </article>
       {% elif m.role == "assistant" %}
@@ -47,19 +33,6 @@
 {% endif %}
 
 {% if header.status == "active" %}
-  {% if claudia_mode == "kid" %}
-    {% set placeholders = [
-      "what's going on?",
-      "type whatever's in your head…",
-      "drop in what's bugging you",
-      "or just paste a screenshot",
-      "tell me what happened",
-    ] %}
-    {% set placeholder = placeholders | random %}
-  {% else %}
-    {% set placeholder = "type your message…" %}
-  {% endif %}
-
 <form id="msg-form"
       hx-post="/session/{{ header.session_id }}/message"
       hx-target="#messages"
@@ -69,11 +42,10 @@
       hx-on::after-swap="claudiaScrollBottom();"
       hx-on::response-error="claudiaShowRetry(event)"
       class="compose">
-  <textarea name="content" id="content" rows="3" placeholder="{{ placeholder }}" autofocus required
+  <textarea name="content" id="content" rows="3" placeholder="type your message…" autofocus required
             onpaste="claudiaHandlePaste(event, '{{ header.session_id }}')"></textarea>
   <input type="hidden" name="frame" value="">
   <div class="compose-actions">
-    {% if claudia_mode != "kid" %}
     <label class="file-upload-btn" title="Upload PDF or image">
       <input type="file" id="uploader" accept=".pdf,.png,.jpg,.jpeg,.txt,.md,.eml" style="display:none"
              onchange="claudiaUpload(this)">
@@ -82,13 +54,6 @@
     <button type="button" class="outline" onclick="claudiaPasteChat('{{ header.session_id }}')">
       paste chat
     </button>
-    {% else %}
-    <label class="file-upload-btn" title="Attach a screenshot — original image is deleted after I read it">
-      <input type="file" id="kid-uploader" accept="image/*" style="display:none"
-             onchange="claudiaKidAttach(this, '{{ header.session_id }}')">
-      + attach
-    </label>
-    {% endif %}
     <button type="submit" class="primary">send</button>
     <small class="muted htmx-indicator">thinking…</small>
   </div>
@@ -96,26 +61,16 @@
 </form>
 
 <form method="post" action="/session/{{ header.session_id }}/end" style="margin-top: 12px; text-align: right;"
-      onsubmit="return confirm('End this {{ "chat" if claudia_mode == "kid" else "session" }}?');">
-  <button type="submit" class="outline">End {{ "chat" if claudia_mode == "kid" else "session" }}</button>
+      onsubmit="return confirm('End this session?');">
+  <button type="submit" class="outline">End session</button>
 </form>
 
 {% elif header.status == "ended" %}
-  {% if claudia_mode == "kid" %}
-    <article class="panel">
-      <p>That chat is done. Anything you want to come back to is saved.</p>
-      <p style="margin-top: 8px;">
-        <a href="/" role="button" class="primary">back to home</a>
-        <a href="/session/new" role="button" class="outline">start a new one</a>
-      </p>
-    </article>
-  {% else %}
-    {% set session_id = header.session_id %}
-    {% include "fragments/mood_panel.html" %}
-    <p style="margin-top: 14px; text-align: center;">
-      <a href="/session/{{ header.session_id }}/review" role="button" class="outline">review what I learnt &rarr;</a>
-    </p>
-  {% endif %}
+  {% set session_id = header.session_id %}
+  {% include "fragments/mood_panel.html" %}
+  <p style="margin-top: 14px; text-align: center;">
+    <a href="/session/{{ header.session_id }}/review" role="button" class="outline">review what I learnt &rarr;</a>
+  </p>
 {% else %}
 <p class="muted">
   <em>Session {{ header.status }}.</em>
@@ -125,11 +80,6 @@
 
 <script>
   function claudiaScrollBottom() {
-    // Two RAF round-trips so we land AFTER layout settles after the swap.
-    // window.scrollTo is more reliable than scrollIntoView when the message
-    // is taller than the viewport — scrollIntoView({block:'end'}) puts the
-    // bottom of the message at the viewport bottom, which can leave the
-    // page above scrolled past the user's reading point.
     requestAnimationFrame(function() {
       requestAnimationFrame(function() {
         window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
@@ -172,7 +122,7 @@
     wrap.setAttribute('data-pending-echo', '1');
     const who = document.createElement('div');
     who.className = 'who';
-    who.textContent = {{ ((display_name or "you") if claudia_mode == "kid" else "you") | tojson }};
+    who.textContent = 'you';
     const body = document.createElement('div');
     body.className = 'msg-body';
     body.textContent = text;
@@ -188,7 +138,6 @@
     document.querySelectorAll('[data-pending-echo]').forEach(n => n.remove());
   }
 
-  // Mechanical send failure → muted retry chip directly under the failed message.
   function claudiaShowRetry(evt) {
     const pending = document.querySelector('[data-pending-echo]');
     if (!pending) return;
@@ -205,69 +154,6 @@
       if (form && form.requestSubmit) form.requestSubmit();
     });
     pending.insertAdjacentElement('afterend', chip);
-  }
-
-  async function claudiaKidAttach(input, sessionId) {
-    const f = input.files && input.files[0];
-    if (!f) return;
-    const ta = document.getElementById('content');
-    const text = ta ? ta.value.trim() : '';
-
-    // Optimistic echo so the screen reflects the action immediately.
-    const msgs = document.getElementById('messages');
-    const pendingUser = document.createElement('article');
-    pendingUser.className = 'msg user msg-pending';
-    pendingUser.setAttribute('data-pending-attach', '1');
-    pendingUser.innerHTML =
-      '<div class="who">' + {{ (display_name or "you") | tojson }} + '</div>' +
-      '<div class="msg-body">' +
-      '<div class="msg tool dashed" style="margin: 0 0 6px 0;"><strong>attaching:</strong> ' +
-      f.name.replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c])) +
-      '</div>' +
-      (text ? text.replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c])) : '') +
-      '</div>';
-    if (msgs) msgs.appendChild(pendingUser);
-    const status = document.createElement('div');
-    status.className = 'status-line';
-    status.style.margin = '4px 0 8px';
-    status.textContent = 'reading screenshot… transcribing text…';
-    if (msgs) msgs.appendChild(status);
-    claudiaScrollBottom();
-
-    const fd = new FormData();
-    fd.append('file', f);
-    fd.append('content', text);
-    try {
-      const res = await fetch('/session/' + sessionId + '/kid-attach', { method: 'POST', body: fd });
-      if (!res.ok) {
-        pendingUser.classList.remove('msg-pending');
-        const errText = await res.text().catch(() => '');
-        const chip = document.createElement('div');
-        chip.className = 'retry-chip';
-        const errMsg = res.status === 413 ? 'image too big' :
-                       res.status === 415 ? 'not an image type I can read' :
-                       'didn’t go through';
-        chip.innerHTML = '<span>' + errMsg + '.</span>';
-        if (status.parentNode) status.remove();
-        pendingUser.insertAdjacentElement('afterend', chip);
-        return;
-      }
-      const html = await res.text();
-      // Remove pending echo + status; the response includes the real user msg.
-      pendingUser.remove();
-      status.remove();
-      if (msgs) msgs.insertAdjacentHTML('beforeend', html);
-      if (ta) ta.value = '';
-      claudiaScrollBottom();
-    } catch (e) {
-      pendingUser.classList.remove('msg-pending');
-      status.remove();
-      const chip = document.createElement('div');
-      chip.className = 'retry-chip';
-      chip.textContent = 'didn’t go through.';
-      pendingUser.insertAdjacentElement('afterend', chip);
-    }
-    input.value = '';
   }
 
   async function claudiaUpload(input) {

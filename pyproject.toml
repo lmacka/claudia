@@ -1,7 +1,7 @@
 [project]
 name = "claudia"
-version = "0.8.7"
-description = "Self-hosted single-tenant AI companion for autistic adults and parents of neurodivergent kids. Adult or kid mode per Helm release."
+version = "0.9.0"
+description = "Self-hosted single-tenant AI companion. One Helm release per user."
 requires-python = ">=3.13"
 dependencies = [
     "fastapi>=0.115",

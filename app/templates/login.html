@@ -5,49 +5,30 @@
 <nav class="nav" aria-label="primary">
   <span class="brand">claudia</span>
   <span class="spacer"></span>
-  {% if role == "kid" %}<a href="/help">need help right now?</a>{% endif %}
 </nav>
 
-{% if role == "kid" and is_first_time %}
-  <h1>Hey {{ display_name or "there" }}. I'm claudia.</h1>
-  <p class="muted">{{ parent_display_name }} set this up for you. Three quick things, then we can talk.</p>
-
-  <div class="panel">
-    <ul class="firstchat-bullets">
-      <li><strong>This is yours, but not secret.</strong> {{ parent_display_name }} set this up on their own server and can read what you write if they really need to. What they normally look at is a short summary of <em>themes</em> — mood, what kind of week you're having — not your actual words. They go to your full chat only if something seems wrong.</li>
-      <li><strong>I'm an AI, not a friend.</strong> I won't pretend otherwise. I can help you think; I can't replace people who care about you.</li>
-      <li><strong>If something's really bad, I'll point you to <a href="/help">people who can help</a></strong> and I'll stay with you while you figure it out.</li>
-    </ul>
-  </div>
-{% elif role == "adult" and password_set is defined and not password_set and google_identity_email %}
+{% if password_set is defined and not password_set and google_identity_email %}
   <h1>welcome back</h1>
   <p class="muted">this deploy uses Google sign-in</p>
 {% else %}
-  <h1>{% if role == "adult" %}welcome back{% else %}welcome back, {{ display_name or "you" }}{% endif %}</h1>
+  <h1>welcome back</h1>
   <p class="muted">enter your password to continue</p>
 {% endif %}
 
-{% if not (role == "adult" and password_set is defined and not password_set and google_identity_email) %}
+{% if not (password_set is defined and not password_set and google_identity_email) %}
 <form method="post" action="/login">
   <fieldset>
-    <label for="passphrase">{% if is_first_time %}pick a password{% else %}password{% endif %}</label>
+    <label for="passphrase">password</label>
     <input type="password" id="passphrase" name="passphrase" required minlength="12" autofocus>
-    {% if is_first_time %}
-      <small class="muted">at least 12 characters.{% if role == "kid" %} don't tell anyone. if you forget it, {{ parent_display_name }} can reset it for you.{% else %} write it down somewhere safe — there's no recovery flow yet.{% endif %}</small>
-      <label for="confirm">type it again</label>
-      <input type="password" id="confirm" name="confirm" required minlength="12">
-    {% endif %}
     {% if error %}
       <p style="color: var(--danger); margin-top: 8px;">{{ error }}</p>
     {% endif %}
-    <button type="submit" class="primary" style="margin-top: 12px;">
-      {% if is_first_time %}{% if role == "kid" %}that's me. let me in.{% else %}save and log in{% endif %}{% else %}log in{% endif %}
-    </button>
+    <button type="submit" class="primary" style="margin-top: 12px;">log in</button>
   </fieldset>
 </form>
 {% endif %}
 
-{% if role == "adult" and google_identity_email %}
+{% if google_identity_email %}
 {% if password_set is defined and password_set %}<p class="muted" style="text-align: center; margin: 16px 0;">— or —</p>{% endif %}
 <form method="post" action="/auth/google/start" style="text-align: center;">
   <button type="submit" class="primary">Sign in with Google ({{ google_identity_email }})</button>

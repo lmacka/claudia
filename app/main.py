@@ -1,10 +1,8 @@
 """
-FastAPI app for claudia (simplified build, lifted from robo-therapist).
+FastAPI app for claudia.
 
-Single-user, LAN-only, basic-auth. Single ops_mode, single model (Sonnet 4.6).
-Removed: tripwire/safety, session timers, modes/model toggle, bridge status,
-cost governor, /summary review page, commitments YAML, prometheus metrics,
-clean/dev cookie, prompt SHA tracking, per-session PDF export.
+Single-user-per-deployment companion app. Cookie auth, single model,
+in-app /setup wizard for first-run customisation.
 
 Routes:
   GET  /                          home
@@ -14,11 +12,17 @@ Routes:
   POST /session/<id>/message      user turn
   POST /session/<id>/end          ends session, schedules audit
   POST /session/<id>/mood         records regulation score
+  GET  /session/<id>/review       memory-diff cards
   GET  /report                    handover report form
   POST /report                    generates one-page PDF
   GET  /connect-gmail / /oauth/callback
   POST /upload, POST /session/<id>/paste
-  GET  /healthz, /readyz
+  GET  /library, /library/*       library admin
+  GET  /people, /people/*         people admin
+  GET  /settings, POST /settings/*  user settings
+  GET  /setup/{1..5}, POST ...    first-run wizard
+  GET  /login, POST /login, /logout
+  GET  /healthz, /readyz, /metrics
 """
 
 from __future__ import annotations
@@ -26,7 +30,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import secrets
 from contextlib import asynccontextmanager
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -40,14 +43,13 @@ from fastapi.responses import (
     RedirectResponse,
     Response,
 )
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from app import auth as auth_mod
 from app import claude as claude_mod
 from app import config as config_module
-from app import google_auth, library_pipeline, safety
+from app import google_auth, library_pipeline
 from app import runtime_config as runtime_config_mod
 from app import setup_autodraft as setup_autodraft_mod
 from app import summariser as summariser_mod
@@ -107,7 +109,7 @@ log = structlog.get_logger()
 
 
 # ---------------------------------------------------------------------------
-# Theme picker (cookie-persisted; same set in adult and kid mode).
+# Theme picker (cookie-persisted).
 # ---------------------------------------------------------------------------
 
 VALID_THEMES = ("sage", "blush", "lavender", "amber", "contrast")
@@ -118,44 +120,6 @@ def _theme_context(request: Request) -> dict:
     """Jinja2Templates context_processor: makes `theme` available everywhere."""
     raw = request.cookies.get(THEME_COOKIE_NAME, "sage")
     return {"theme": raw if raw in VALID_THEMES else "sage"}
-
-
-# ---------------------------------------------------------------------------
-# Parent display name (kid mode) — DB-backed override of the Helm default.
-# Editable via /setup/1 + /settings; reads on every request so a change
-# applies immediately without a pod restart.
-# ---------------------------------------------------------------------------
-
-KV_PARENT_DISPLAY_NAME = "parent_display_name"
-
-
-def effective_kid_parent_display_name() -> str:
-    """kv_store override → cfg default. Set via /setup/1 and /settings."""
-    from app.db_kv import kv_get
-
-    try:
-        value = kv_get(state.cfg.data_root, KV_PARENT_DISPLAY_NAME)
-        if value and value.strip():
-            return value.strip()
-    except (OSError, AttributeError):
-        pass
-    return state.cfg.kid_parent_display_name
-
-
-def _save_kid_parent_display_name(value: str) -> None:
-    """Persist a new parent display name. Empty string clears the override."""
-    from app.db_kv import kv_delete, kv_set
-
-    value = value.strip()
-    if not value:
-        kv_delete(state.cfg.data_root, KV_PARENT_DISPLAY_NAME)
-        return
-    kv_set(state.cfg.data_root, KV_PARENT_DISPLAY_NAME, value)
-
-
-def _parent_name_context(request: Request) -> dict:
-    """Jinja2Templates context_processor: per-request parent display name."""
-    return {"parent_display_name": effective_kid_parent_display_name()}
 
 
 def _google_enabled_context(request: Request) -> dict:
@@ -174,22 +138,16 @@ def _runtime_overrides_context(request: Request) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Google integration toggle (adult mode) — file-backed override of the
-# CLAUDIA_ADULT_INTEGRATIONS_GOOGLE_ENABLED env var. Lets the user flip
+# Google integration toggle — file-backed override of the
+# CLAUDIA_INTEGRATIONS_GOOGLE_ENABLED env var. Lets the user flip
 # Gmail/Calendar tools on/off from /settings without redeploying.
-# Kid mode physically cannot reach this — _google_enabled checks
-# cfg.is_adult first.
 # ---------------------------------------------------------------------------
 
 KV_GOOGLE_ENABLED = "google_enabled"
 
 
 def effective_google_enabled(cfg: config_module.Config | None = None) -> bool:
-    """kv_store override → cfg default. Adult mode only — kid caller short-circuits.
-
-    cfg is optional; when omitted, reads state.cfg (request-time path).
-    Tests pass cfg explicitly to avoid global-state coupling.
-    """
+    """kv_store override → cfg default."""
     from app.db_kv import kv_get
 
     cfg = cfg if cfg is not None else state.cfg
@@ -199,7 +157,7 @@ def effective_google_enabled(cfg: config_module.Config | None = None) -> bool:
             return value.strip().lower() in ("1", "true", "yes")
     except (OSError, AttributeError):
         pass
-    return cfg.adult_integrations_google_enabled
+    return cfg.integrations_google_enabled
 
 
 def _save_google_enabled(value: bool) -> None:
@@ -221,8 +179,7 @@ class AppState:
     templates: Jinja2Templates
     app_root: Path
     rate_limiter: auth_mod.IPRateLimiter
-    kid_session_store: auth_mod.SessionStore  # token -> kid display_name, persisted
-    adult_session_store: auth_mod.SessionStore  # token -> adult display_name, persisted
+    session_store: auth_mod.SessionStore  # token -> display_name, persisted
     library: Library
     extractor_registry: Any
     status_bus: StatusBus
@@ -264,14 +221,11 @@ def _google_cfg(cfg: config_module.Config) -> GoogleAuthConfig:
 
 
 def _google_enabled(cfg: config_module.Config) -> bool:
-    """Single source of truth: Google integrations are adult-mode-only and opt-in.
+    """Single source of truth: Google integrations are opt-in.
 
-    Kid mode is short-circuited unconditionally. Adult mode honours the
-    file-backed override (set via /settings) if present, otherwise falls
-    back to cfg.adult_integrations_google_enabled (env var).
+    Honours the file-backed override (set via /settings) if present,
+    otherwise falls back to cfg.integrations_google_enabled (env var).
     """
-    if not cfg.is_adult:
-        return False
     return effective_google_enabled(cfg)
 
 
@@ -284,9 +238,7 @@ def _build_tool_registry(cfg: config_module.Config, session_id: str | None = Non
     reg.register(lookup_person_spec(state.people, state.library))
     reg.register(search_people_spec(state.people))
 
-    # Google integrations: adult-mode only, opt-in. Kid mode physically
-    # cannot get Gmail/Calendar tools — the gate is here at the registry,
-    # not at the prompt. See T-NEW-F.
+    # Google integrations: opt-in.
     if _google_enabled(cfg):
         gcfg = _google_cfg(cfg)
         if gcfg.is_complete():
@@ -316,8 +268,8 @@ async def lifespan(app: FastAPI):
     # writers (Library / People / auth / summariser / setup wizard /
     # _render_handover_pdf). No pre-creation needed at boot.
 
-    # Storage (T-NEW-I): SqliteSessionStore in every mode. Tests get a fresh
-    # /data/claudia.db under tmp_path so there's no global-state contamination.
+    # Storage. Tests get a fresh /data/claudia.db under tmp_path so there's
+    # no global-state contamination.
     state.store = SqliteSessionStore(cfg.data_root)
     # ContextLoader's people_md_provider + library_index_provider are wired
     # below once state.people / state.library are constructed; until then
@@ -325,17 +277,14 @@ async def lifespan(app: FastAPI):
     state.loader = ContextLoader(
         cfg.data_root,
         cfg.prompts_dir,
-        mode=cfg.mode,
         display_name=cfg.display_name,
-        kid_parent_display_name_provider=effective_kid_parent_display_name,
         people_md_provider=lambda: state.people.render_people_md() if hasattr(state, "people") else "",
         additional_instructions_provider=lambda: runtime_config_mod.get_additional_instructions(cfg.data_root),
         library_index_provider=lambda: state.library.render_index_md() if hasattr(state, "library") else "",
         same_day_transcripts_provider=_recent_same_day_transcripts_from_store,
     )
     state.rate_limiter = auth_mod.IPRateLimiter()
-    state.kid_session_store = auth_mod.SessionStore(cfg.data_root, role="kid")
-    state.adult_session_store = auth_mod.SessionStore(cfg.data_root, role="adult")
+    state.session_store = auth_mod.SessionStore(cfg.data_root)
 
     # T-NEW-RC (v0.8 phase A): mirror env-mounted credentials into kv_store
     # so /settings can render their values back even when the Helm Secret is
@@ -370,22 +319,15 @@ async def lifespan(app: FastAPI):
         directory=str(state.app_root / "templates"),
         context_processors=[
             _theme_context,
-            _parent_name_context,
             _google_enabled_context,
             _runtime_overrides_context,
         ],
     )
     state.templates.env.globals["asset_version"] = str(int(_time.time()))
-    state.templates.env.globals["claudia_mode"] = cfg.mode
     state.templates.env.globals["display_name"] = cfg.display_name
-    # parent_display_name is supplied dynamically per-request by
-    # _parent_name_context so /setup edits apply without a pod restart.
-    state.templates.env.globals["crisis_footer_text"] = safety.CRISIS_FOOTER_TEXT
-    state.templates.env.globals["au_hotlines"] = safety.AU_HOTLINES
 
     log.info(
         "app.startup",
-        mode=cfg.mode,
         ops_mode=cfg.ops_mode,
         data_root=str(cfg.data_root),
     )
@@ -398,29 +340,11 @@ app.mount("/static", StaticFiles(directory=str(Path(__file__).resolve().parent /
 
 
 # ---------------------------------------------------------------------------
-# Auth
+# Auth — single cookie role. Passphrase set during /setup/2 (or via Helm
+# Secret env override). `require_auth` is the dep on every user route;
+# `require_setup_auth` is open during first-run bootstrap, cookie-gated
+# thereafter.
 # ---------------------------------------------------------------------------
-#
-# Adult mode: Basic auth on every route, single password.
-# Kid mode:  Kid cookie (`claudia-kid`) on / and /session/*; Basic auth on
-#            /admin/* (separate password = parent admin). See
-#            /plan-eng-review D5 for the hardening posture.
-#
-# `require_auth` is the kid-or-adult auth dep used on everything that's
-# NOT /admin. `require_parent_admin` is the basic-auth dep on /admin.
-
-# Adult-mode auth is cookie-based (set during /setup/1). The only remaining
-# HTTP Basic Auth surface is the kid-mode parent admin (/admin/* +
-# /library + /people in kid mode). Adult deploys never see a Basic Auth
-# prompt on any user-facing route.
-_admin_basic_auth = HTTPBasic(realm="claudia-admin", auto_error=False)
-
-
-def _check_basic_credentials(credentials: HTTPBasicCredentials) -> bool:
-    cfg = state.cfg
-    user_ok = secrets.compare_digest(credentials.username, cfg.basic_auth_user)
-    pw_ok = secrets.compare_digest(credentials.password, cfg.basic_auth_password)
-    return user_ok and pw_ok
 
 
 def _client_ip(request: Request) -> str:
@@ -433,102 +357,48 @@ def _client_ip(request: Request) -> str:
     return "unknown"
 
 
-def _adult_cookie_display_name(request: Request) -> str | None:
-    """Return the adult display_name if a valid adult cookie is present."""
-    cookie = request.cookies.get(auth_mod.ADULT_COOKIE_NAME, "")
+def _cookie_display_name(request: Request) -> str | None:
+    """Return the display_name if a valid session cookie is present."""
+    cookie = request.cookies.get(auth_mod.COOKIE_NAME, "")
     if not cookie:
         return None
-    return state.adult_session_store.get(cookie)
-
-
-def _kid_cookie_display_name(request: Request) -> str | None:
-    cookie = request.cookies.get(auth_mod.KID_COOKIE_NAME, "")
-    if not cookie:
-        return None
-    return state.kid_session_store.get(cookie)
+    return state.session_store.get(cookie)
 
 
 def require_auth(request: Request) -> str:
-    """Cookie-based auth for the user-facing surface (/, /session/*, etc.).
-
-    Both modes use the same shape: a passphrase set during /setup or first
-    /login, then a `claudia-adult` or `claudia-kid` session cookie. No HTTP
-    Basic Auth on user-facing routes any more.
-    """
+    """Cookie-based auth for the user-facing surface."""
     cfg = state.cfg
     if cfg.is_local:
         return "liam"
-
-    role: auth_mod.Role = "kid" if cfg.is_kid else "adult"
-    display = _kid_cookie_display_name(request) if cfg.is_kid else _adult_cookie_display_name(request)
+    display = _cookie_display_name(request)
     if display is not None:
         return display
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail=f"{role}-not-logged-in",
+        detail="not-logged-in",
         headers={"Location": "/login"},
     )
 
 
-def require_setup_auth(
-    request: Request,
-    admin_credentials: HTTPBasicCredentials | None = Depends(_admin_basic_auth),
-) -> str:
+def require_setup_auth(request: Request) -> str:
     """Auth for /setup/*.
 
-    Adult mode:
-      - If no passphrase has been set yet (fresh install): allow anyone to
-        run the wizard. The wizard's password step writes the passphrase.
-      - Otherwise: require a valid adult cookie (i.e., already logged in).
-    Kid mode:
-      - Always parent-admin basic auth (BASIC_AUTH_PASSWORD).
+    Open during initial bootstrap (no passphrase set). Cookie-gated
+    thereafter.
     """
     cfg = state.cfg
     if cfg.is_local:
         return "liam"
-    if cfg.is_kid:
-        if admin_credentials is not None and _check_basic_credentials(admin_credentials):
-            return admin_credentials.username
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="setup is parent-admin only in kid mode",
-            headers={"WWW-Authenticate": 'Basic realm="claudia-admin"'},
-        )
-    # Adult mode: open during initial bootstrap, cookie-gated thereafter.
-    if not auth_mod.is_passphrase_set(cfg.data_root, role="adult"):
+    if not auth_mod.is_passphrase_set(cfg.data_root):
         return "setup"
-    display = _adult_cookie_display_name(request)
+    display = _cookie_display_name(request)
     if display is not None:
         return display
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="adult-not-logged-in",
+        detail="not-logged-in",
         headers={"Location": "/login"},
     )
-
-
-def require_parent_admin(
-    credentials: HTTPBasicCredentials | None = Depends(_admin_basic_auth),
-) -> str:
-    """
-    Auth for /admin/* — parent admin password.
-    Only meaningful in kid mode; in adult mode the routes 404 anyway.
-    """
-    cfg = state.cfg
-    if cfg.is_local:
-        return "parent"
-    if not cfg.is_kid:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="admin routes are only available in kid mode",
-        )
-    if credentials is None or not _check_basic_credentials(credentials):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Unauthorized",
-            headers={"WWW-Authenticate": 'Basic realm="claudia-admin"'},
-        )
-    return credentials.username
 
 
 # ---------------------------------------------------------------------------
@@ -560,19 +430,16 @@ async def readyz() -> Response:
 
 
 # ---------------------------------------------------------------------------
-# Auth: redirect kid-not-logged-in to /login
+# Auth: redirect not-logged-in to /login
 # ---------------------------------------------------------------------------
 
 
-from fastapi.exceptions import HTTPException as _HTTPExc  # noqa: E402
-
-
-@app.exception_handler(_HTTPExc)
-async def _login_redirect(request: Request, exc: _HTTPExc) -> Response:
+@app.exception_handler(HTTPException)
+async def _login_redirect(request: Request, exc: HTTPException) -> Response:
     """Cookie-auth 401s redirect to /login instead of showing the raw error."""
     if (
         exc.status_code == 401
-        and exc.detail in ("kid-not-logged-in", "adult-not-logged-in")
+        and exc.detail == "not-logged-in"
         and not request.url.path.startswith("/login")
     ):
         return RedirectResponse(url="/login", status_code=303)
@@ -585,52 +452,35 @@ async def _login_redirect(request: Request, exc: _HTTPExc) -> Response:
 
 
 # ---------------------------------------------------------------------------
-# /login (kid mode only) and /logout
+# /login and /logout
 # ---------------------------------------------------------------------------
-
-
-def _login_role() -> auth_mod.Role:
-    """Which role the current /login flow is for. Per-mode singleton."""
-    return "kid" if state.cfg.is_kid else "adult"
-
-
-def _login_session_store() -> auth_mod.SessionStore:
-    return state.kid_session_store if state.cfg.is_kid else state.adult_session_store
 
 
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request) -> HTMLResponse:
     cfg = state.cfg
-    role = _login_role()
     # Already logged in? Bounce home.
-    existing = (
-        _kid_cookie_display_name(request) if role == "kid" else _adult_cookie_display_name(request)
-    )
-    if existing is not None:
+    if _cookie_display_name(request) is not None:
         return RedirectResponse(url="/", status_code=303)
 
-    password_set = auth_mod.is_passphrase_set(cfg.data_root, role=role)
-    # Adult mode: only bounce to /setup if setup itself isn't complete.
-    # Setup-complete-but-no-password is a valid state when the user authed
-    # via Google during the wizard; in that case render /login with the
-    # Google button as the only option.
-    if role == "adult" and not password_set and not _setup_complete():
+    password_set = auth_mod.is_passphrase_set(cfg.data_root)
+    # Bounce to /setup if setup itself isn't complete. Setup-complete-but-
+    # no-password is a valid state when the user authed via Google during
+    # the wizard; in that case render /login with the Google button as the
+    # only option.
+    if not password_set and not _setup_complete():
         return RedirectResponse(url="/setup", status_code=303)
 
-    # Show "Sign in with Google" option only when:
-    #   - adult mode
-    #   - Google credentials are configured (env or kv)
-    #   - an identity email has already been bound (one-shot lock per
-    #     decision 9 — first identity to complete setup owns the deploy)
+    # Show "Sign in with Google" option only when Google credentials are
+    # configured (env or kv) and an identity email has already been bound.
     google_identity_email: str | None = None
-    if role == "adult" and _google_creds_present(cfg):
+    if _google_creds_present(cfg):
         google_identity_email = _google_identity_bound_email(cfg)
 
     return state.templates.TemplateResponse(
         request,
         "login.html",
         {
-            "role": role,
             "is_first_time": not password_set,
             "password_set": password_set,
             "display_name": cfg.display_name,
@@ -642,11 +492,10 @@ async def login_page(request: Request) -> HTMLResponse:
 @app.post("/login")
 async def login_submit(request: Request) -> Response:
     cfg = state.cfg
-    role = _login_role()
 
     ip = _client_ip(request)
     if not state.rate_limiter.check(ip):
-        log.warning("auth.rate_limited", role=role, ip=ip)
+        log.warning("auth.rate_limited", ip=ip)
         return Response(
             content="Too many attempts. Try again in a few minutes.",
             status_code=429,
@@ -654,44 +503,12 @@ async def login_submit(request: Request) -> Response:
 
     form = await request.form()
     passphrase = str(form.get("passphrase", ""))
-    confirm = str(form.get("confirm", ""))
 
-    is_first_time = not auth_mod.is_passphrase_set(cfg.data_root, role=role)
+    is_first_time = not auth_mod.is_passphrase_set(cfg.data_root)
 
-    if is_first_time and role == "kid":
-        # Kid first-time: setup flow runs HERE (parent has not pre-set the
-        # kid passphrase; the kid sets their own at first login).
-        if passphrase != confirm:
-            return state.templates.TemplateResponse(
-                request,
-                "login.html",
-                {
-                    "role": role,
-                    "is_first_time": True,
-                    "display_name": cfg.display_name,
-                    "error": "The two passwords didn't match.",
-                },
-                status_code=400,
-            )
-        try:
-            auth_mod.set_passphrase(cfg.data_root, passphrase, role="kid")
-        except ValueError as e:
-            return state.templates.TemplateResponse(
-                request,
-                "login.html",
-                {
-                    "role": role,
-                    "is_first_time": True,
-                    "display_name": cfg.display_name,
-                    "error": str(e),
-                },
-                status_code=400,
-            )
-
-    if is_first_time and role == "adult":
-        # Adult mode with no password set: either setup is incomplete (bounce
-        # to wizard) or the user authed via Google during setup and never
-        # picked a password (refuse password attempt; they must use Google).
+    if is_first_time:
+        # Setup-incomplete: bounce to wizard. Setup-complete + no-password
+        # is the Google-only path; refuse password attempt and tell them.
         if not _setup_complete():
             return RedirectResponse(url="/setup", status_code=303)
         google_identity_email: str | None = None
@@ -701,7 +518,6 @@ async def login_submit(request: Request) -> Response:
             request,
             "login.html",
             {
-                "role": role,
                 "is_first_time": True,
                 "password_set": False,
                 "display_name": cfg.display_name,
@@ -711,14 +527,13 @@ async def login_submit(request: Request) -> Response:
             status_code=401,
         )
 
-    if not auth_mod.verify_passphrase(cfg.data_root, passphrase, role=role):
+    if not auth_mod.verify_passphrase(cfg.data_root, passphrase):
         state.rate_limiter.record(ip)
-        log.warning("auth.verify_failed", role=role, ip=ip)
+        log.warning("auth.verify_failed", ip=ip)
         return state.templates.TemplateResponse(
             request,
             "login.html",
             {
-                "role": role,
                 "is_first_time": False,
                 "display_name": cfg.display_name,
                 "error": "That password didn't match. Try again.",
@@ -727,19 +542,19 @@ async def login_submit(request: Request) -> Response:
         )
 
     state.rate_limiter.reset(ip)
-    return _issue_login_cookie(role, redirect_to="/")
+    return _issue_login_cookie(redirect_to="/")
 
 
-def _issue_login_cookie(role: auth_mod.Role, redirect_to: str) -> Response:
+def _issue_login_cookie(redirect_to: str) -> Response:
     """Mint a session token, persist it, and set the response cookie."""
     cfg = state.cfg
     token = auth_mod.new_session_token()
-    _login_session_store().add(token, cfg.display_name or role)
-    log.info("auth.login_success", role=role, display_name=cfg.display_name)
+    state.session_store.add(token, cfg.display_name or "user")
+    log.info("auth.login_success", display_name=cfg.display_name)
 
     resp = RedirectResponse(url=redirect_to, status_code=303)
     resp.set_cookie(
-        key=auth_mod.cookie_name(role),
+        key=auth_mod.COOKIE_NAME,
         value=token,
         max_age=auth_mod.COOKIE_TTL_SECONDS,
         httponly=True,
@@ -752,24 +567,22 @@ def _issue_login_cookie(role: auth_mod.Role, redirect_to: str) -> Response:
 
 @app.post("/logout")
 async def logout(request: Request) -> Response:
-    cfg = state.cfg
-    role: auth_mod.Role = "kid" if cfg.is_kid else "adult"
-    cookie = request.cookies.get(auth_mod.cookie_name(role), "")
+    cookie = request.cookies.get(auth_mod.COOKIE_NAME, "")
     if cookie:
-        _login_session_store().remove(cookie)
+        state.session_store.remove(cookie)
     resp = RedirectResponse(url="/login", status_code=303)
-    resp.delete_cookie(auth_mod.cookie_name(role), path="/")
+    resp.delete_cookie(auth_mod.COOKIE_NAME, path="/")
     return resp
 
 
 # ---------------------------------------------------------------------------
-# /settings — theme picker. Same UI in adult + kid; cookie-persisted.
+# /settings — theme picker, integration toggles. Cookie-persisted.
 # ---------------------------------------------------------------------------
 
 
 @app.get("/settings", response_class=HTMLResponse)
 async def settings_page(request: Request, _: str = Depends(require_auth)) -> HTMLResponse:
-    google_creds_present = state.cfg.is_adult and _google_creds_present(state.cfg)
+    google_creds_present = _google_creds_present(state.cfg)
     google_tools_connected = False
     if google_creds_present and _google_enabled(state.cfg):
         try:
@@ -787,24 +600,11 @@ async def settings_page(request: Request, _: str = Depends(require_auth)) -> HTM
     )
 
 
-@app.post("/settings/parent-name")
-async def settings_parent_name(request: Request, _: str = Depends(require_auth)) -> Response:
-    """Persist the parent's display name. Kid mode only."""
-    if not state.cfg.is_kid:
-        raise HTTPException(404, "parent name is kid-mode only")
-    form = await request.form()
-    value = str(form.get("parent_display_name", "")).strip()
-    _save_kid_parent_display_name(value)
-    return RedirectResponse(url="/settings", status_code=303)
-
-
 @app.post("/settings/google-integration")
 async def settings_google_integration(
     request: Request, _: str = Depends(require_auth)
 ) -> Response:
-    """Toggle Gmail + Calendar tool registration. Adult mode only."""
-    if not state.cfg.is_adult:
-        raise HTTPException(404, "Google integration is adult-mode only")
+    """Toggle Gmail + Calendar tool registration."""
     form = await request.form()
     enabled = str(form.get("enabled", "")).strip().lower() in ("1", "true", "yes", "on")
     _save_google_enabled(enabled)
@@ -815,14 +615,11 @@ async def settings_google_integration(
 async def settings_therapist_name(
     request: Request, _: str = Depends(require_auth)
 ) -> Response:
-    """Persist therapist alias (the bot's preferred name in copy). Adult only.
+    """Persist therapist alias (the bot's preferred name in copy).
 
-    v0.8 phase B: writes to kv_store via runtime_config. Empty string clears
-    the override (bot reverts to default 'claudia' framing). 40-char cap
-    matches the input maxlength.
+    Empty string clears the override (bot reverts to default 'claudia'
+    framing). 40-char cap matches the input maxlength.
     """
-    if not state.cfg.is_adult:
-        raise HTTPException(404, "therapist name is adult-mode only")
     from app.db_kv import kv_delete, kv_set
 
     form = await request.form()
@@ -838,13 +635,11 @@ async def settings_therapist_name(
 async def settings_additional_instructions(
     request: Request, _: str = Depends(require_auth)
 ) -> Response:
-    """Persist free-form additional companion instructions. Adult only.
+    """Persist free-form additional companion instructions.
 
     Appended to companion-adult.md at assemble time via ContextLoader's
-    additional_instructions_provider (Phase B). Empty string clears.
+    additional_instructions_provider. Empty string clears.
     """
-    if not state.cfg.is_adult:
-        raise HTTPException(404, "additional instructions is adult-mode only")
     from app.db_kv import kv_delete, kv_set
 
     form = await request.form()
@@ -877,75 +672,7 @@ async def settings_theme(request: Request, _: str = Depends(require_auth)) -> Re
 
 
 # ---------------------------------------------------------------------------
-# /help — public crisis-help page (no auth, by design — safety reach matters
-# more than access control).
-# ---------------------------------------------------------------------------
-
-
-@app.get("/help", response_class=HTMLResponse)
-async def help_page(request: Request) -> HTMLResponse:
-    """AU hotline directory. Reachable via the kid-chat ··· menu and direct URL.
-
-    Deliberately unauthed: a kid who's lost their password should still hit
-    the hotline numbers without bouncing through /login.
-    """
-    back = request.query_params.get("back")
-    return state.templates.TemplateResponse(
-        request,
-        "help.html",
-        {"back": back},
-    )
-
-
-# ---------------------------------------------------------------------------
-# /admin/* (kid mode only) — parent admin
-# ---------------------------------------------------------------------------
-
-
-@app.get("/admin", response_class=HTMLResponse)
-@app.get("/admin/", response_class=HTMLResponse)
-async def admin_home(
-    request: Request,
-    _: str = Depends(require_parent_admin),
-) -> HTMLResponse:
-    cfg = state.cfg
-    sessions = state.store.list_sessions()
-    return state.templates.TemplateResponse(
-        request,
-        "admin/home.html",
-        {
-            "display_name": cfg.display_name,
-            "session_count": len(sessions),
-        },
-    )
-
-
-@app.get("/admin/review", response_class=HTMLResponse)
-async def admin_review(
-    request: Request,
-    _: str = Depends(require_parent_admin),
-) -> HTMLResponse:
-    cfg = state.cfg
-    return state.templates.TemplateResponse(
-        request,
-        "admin/review.html",
-        {
-            "display_name": cfg.display_name,
-            "summary": None,
-            "themes": [],
-            "flag": "none",
-            "people_added": [],
-        },
-    )
-
-
-# ---------------------------------------------------------------------------
-# Home
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# /setup — first-run wizard. Three stages. Writes /data/.setup_complete on
+# /setup — first-run wizard. Five stages. Writes /data/.setup_complete on
 # finish. / redirects here when the marker is missing.
 # ---------------------------------------------------------------------------
 
@@ -995,19 +722,14 @@ def _mark_setup_complete(note: str = "") -> None:
 
 
 # ---------------------------------------------------------------------------
-# 5-step wizard (v0.8 phase D)
+# 5-step setup wizard
 # ---------------------------------------------------------------------------
 #
 # Step 1: Anthropic API key (with live validation)
 # Step 2: Auth method (password OR Google OAuth identity)
-# Step 3: Profile + model + custom prompt + (disabled) kid-mode toggle
+# Step 3: Profile + model + custom prompt
 # Step 4: Library import (inline upload, auto-draft profile)
 # Step 5: Recap + theme + therapist name → commit
-#
-# Adult mode only goes through this; kid mode setup is operator-side
-# (parent ssh + Helm), so kid users never hit /setup/*.
-#
-# Per /home/liamm/.claude/plans/ok-but-first-inspect-crystalline-seal.md.
 
 _AVAILABLE_MODELS = [
     ("claude-sonnet-4-6", "Sonnet 4.6", "Default. Best balance of quality + cost."),
@@ -1027,11 +749,11 @@ def _setup_first_incomplete_step() -> int:
     # Step 1: Anthropic API key (env or kv); local mode skips the check.
     if not cfg.is_local and not runtime_config_mod.get_anthropic_key(cfg.data_root):
         return 1
-    # Step 2: adult passphrase OR Google identity bound; local skips.
-    if cfg.is_adult and not cfg.is_local:
+    # Step 2: passphrase OR Google identity bound; local skips.
+    if not cfg.is_local:
         from app.db_kv import kv_exists
 
-        password_done = auth_mod.is_passphrase_set(cfg.data_root, role="adult")
+        password_done = auth_mod.is_passphrase_set(cfg.data_root)
         google_done = kv_exists(cfg.data_root, runtime_config_mod.KV_GOOGLE_IDENTITY_EMAIL)
         if not (password_done or google_done):
             return 2
@@ -1066,9 +788,8 @@ def _setup_step_context(step: int, extra: dict | None = None) -> dict:
         "data": state_data,
         "cfg_display_name": cfg.display_name,
         "cfg_country": cfg.country,
-        "cfg_parent_display_name": effective_kid_parent_display_name(),
-        "adult_passphrase_set": (
-            cfg.is_local or auth_mod.is_passphrase_set(cfg.data_root, role="adult")
+        "passphrase_set": (
+            cfg.is_local or auth_mod.is_passphrase_set(cfg.data_root)
         ),
     }
     if extra:
@@ -1128,7 +849,7 @@ async def setup_step2(request: Request, _: str = Depends(require_setup_auth)) ->
     # Already authed via either method? Skip ahead.
     from app.db_kv import kv_exists
 
-    if auth_mod.is_passphrase_set(cfg.data_root, role="adult") or kv_exists(
+    if auth_mod.is_passphrase_set(cfg.data_root) or kv_exists(
         cfg.data_root, runtime_config_mod.KV_GOOGLE_IDENTITY_EMAIL
     ):
         return RedirectResponse(url="/setup/3", status_code=303)
@@ -1162,7 +883,7 @@ async def setup_step2_submit(request: Request, _: str = Depends(require_setup_au
             status_code=400,
         )
     try:
-        auth_mod.set_passphrase(cfg.data_root, passphrase, role="adult")
+        auth_mod.set_passphrase(cfg.data_root, passphrase)
     except ValueError as e:
         return state.templates.TemplateResponse(
             request,
@@ -1176,10 +897,10 @@ async def setup_step2_submit(request: Request, _: str = Depends(require_setup_au
             ),
             status_code=400,
         )
-    return _issue_login_cookie("adult", redirect_to="/setup/3")
+    return _issue_login_cookie(redirect_to="/setup/3")
 
 
-# ---- Step 3: Profile + model + prompt + kid-toggle ------------------------
+# ---- Step 3: Profile + model + custom prompt -----------------------------
 
 
 @app.get("/setup/3", response_class=HTMLResponse)
@@ -1205,7 +926,6 @@ async def setup_step3(request: Request, _: str = Depends(require_setup_auth)) ->
 @app.post("/setup/3")
 async def setup_step3_submit(request: Request, _: str = Depends(require_setup_auth)) -> Response:
     form = await request.form()
-    parent_name = str(form.get("parent_display_name", "")).strip()
     model = str(form.get("default_model", "")).strip()
     instructions = str(form.get("additional_instructions", "")).strip()
 
@@ -1215,11 +935,8 @@ async def setup_step3_submit(request: Request, _: str = Depends(require_setup_au
             "dob": str(form.get("dob", "")).strip(),
             "country": str(form.get("country", "")).strip() or "AU",
             "region": str(form.get("region", "")).strip(),
-            "parent_display_name": parent_name,
         }
     )
-    if state.cfg.is_kid and parent_name:
-        _save_kid_parent_display_name(parent_name)
 
     from app.db_kv import kv_delete, kv_set
 
@@ -1376,8 +1093,6 @@ async def setup_step5_submit(request: Request, _: str = Depends(require_setup_au
     # Compose 01_background.md from the four step-4 textareas + step-3
     # profile fields. Same composer as before; just moved here.
     target_label = cfg.display_name or state_data.get("preferred_name") or "the user"
-    if cfg.is_kid:
-        target_label = cfg.display_name or "this kid"
     sections: list[str] = [f"# About {target_label}\n"]
     if state_data.get("section_who"):
         sections.append("## Who they are right now\n\n" + state_data["section_who"].strip() + "\n")
@@ -1408,15 +1123,14 @@ async def setup_step5_submit(request: Request, _: str = Depends(require_setup_au
     _setup_state_clear()
     log.info("setup.completed", data_root=str(cfg.data_root))
 
-    target = "/admin" if cfg.is_kid else "/"
     resp: Response
-    if cfg.is_adult and auth_mod.is_passphrase_set(cfg.data_root, role="adult"):
+    if auth_mod.is_passphrase_set(cfg.data_root):
         # Auto-login (in case password path was used + cookie expired between
         # step 2 and step 5 — rare but possible during long wizard sessions).
-        resp = _issue_login_cookie("adult", redirect_to=target)
+        resp = _issue_login_cookie(redirect_to="/")
     else:
-        resp = RedirectResponse(url=target, status_code=303)
-    # Persist the chosen theme as a 1-year cookie regardless of mode.
+        resp = RedirectResponse(url="/", status_code=303)
+    # Persist the chosen theme as a 1-year cookie.
     if theme in VALID_THEMES:
         resp.set_cookie(
             THEME_COOKIE_NAME,
@@ -1716,36 +1430,6 @@ async def session_message(
     if not user_text:
         return HTMLResponse("", status_code=204)
 
-    # Kid-mode safety floor: run regex tripwire + Haiku classifier on every
-    # incoming message before the companion is allowed to reply. Per Premise
-    # 3 + values.schema.json, this is non-disableable in kid mode.
-    safety_result = safety.screen_message(
-        user_text,
-        api_key=state.cfg.anthropic_api_key,
-        classifier_model=state.cfg.classifier_model,
-        enabled=state.cfg.is_kid,
-    )
-    if safety_result.flagged:
-        log.info(
-            "safety.flagged",
-            session_id=session_id,
-            category=safety_result.category,
-            prominence=safety_result.prominence,
-            regex=safety_result.flagged_regex,
-            classifier=safety_result.flagged_classifier,
-        )
-        state.store.append_event(
-            session_id,
-            "safety_flag",
-            {
-                "category": safety_result.category,
-                "prominence": safety_result.prominence,
-                "explanation": safety_result.explanation,
-                "regex": safety_result.flagged_regex,
-                "classifier": safety_result.flagged_classifier,
-            },
-        )
-
     state.store.append_message(session_id, Message(role="user", content=user_text))
     if frame_tag:
         state.store.append_event(session_id, "frame_tag", {"tag": frame_tag})
@@ -1806,11 +1490,8 @@ async def session_message(
 async def session_review(
     session_id: str, request: Request, _: str = Depends(require_auth)
 ) -> HTMLResponse:
-    """Adult-mode memory-diff review. Read-only for v0.5.0 — surfaces the
-    auditor's report as cards so the user can see what claudia learnt.
-    Interactive keep/edit/discard is a v0.5.x follow-up."""
-    if not state.cfg.is_adult:
-        raise HTTPException(404, "review is adult-mode only")
+    """Memory-diff review. Read-only — surfaces the auditor's report as cards
+    so the user can see what claudia learnt."""
     try:
         header = state.store.load_header(session_id)
     except FileNotFoundError:
@@ -2013,9 +1694,6 @@ def _run_audit_and_apply(session_id: str) -> None:
                 state.cfg.prompts_dir,
                 header.model or SONNET,
                 inp,
-                mode=state.cfg.mode,
-                display_name=state.cfg.display_name,
-                parent_display_name=effective_kid_parent_display_name() if state.cfg.is_kid else "",
             )
     except summariser_mod.AuditorError as e:
         log.error("audit.failed", session_id=session_id, error=str(e))
@@ -2073,8 +1751,6 @@ def _run_audit_and_apply(session_id: str) -> None:
 
 @app.get("/report", response_class=HTMLResponse)
 async def report_form(request: Request, _: str = Depends(require_auth)) -> HTMLResponse:
-    if not state.cfg.is_adult:
-        raise HTTPException(404, "report is adult-mode only")
     last_export_ts = _read_last_export_ts(state.cfg.data_root)
     today = date.today()
     default_start = last_export_ts.date() if last_export_ts else (today - timedelta(days=30))
@@ -2091,8 +1767,6 @@ async def report_form(request: Request, _: str = Depends(require_auth)) -> HTMLR
 
 @app.post("/report")
 async def report_submit(request: Request, _: str = Depends(require_auth)) -> Response:
-    if not state.cfg.is_adult:
-        raise HTTPException(404, "report is adult-mode only")
     from fastapi.responses import FileResponse
 
     form = await request.form()
@@ -2415,7 +2089,7 @@ def _google_creds_present(cfg: config_module.Config) -> bool:
     Identity flow can run even when /settings tools toggle is off,
     as long as credentials are configured."""
     cid, secret, _redirect = runtime_config_mod.get_google_creds(cfg.data_root)
-    return bool(cid and secret) and cfg.is_adult
+    return bool(cid and secret)
 
 
 def _google_identity_bound_email(cfg: config_module.Config) -> str | None:
@@ -2465,14 +2139,12 @@ async def connect_gmail_disconnect(_: str = Depends(require_auth)) -> RedirectRe
 @app.post("/auth/google/start")
 async def auth_google_start(request: Request) -> Response:
     """Identity-only OAuth entrypoint. Used by /setup/2 and /login when the
-    user picks 'Sign in with Google'. Adult-mode only.
+    user picks 'Sign in with Google'.
 
     Unauthenticated by design — the user is mid-login. The identity binding
-    (one-shot lock per decision 9) is enforced in the callback.
+    (one-shot lock) is enforced in the callback.
     """
     cfg = state.cfg
-    if not cfg.is_adult:
-        raise HTTPException(status_code=404, detail="Google sign-in is adult-mode only")
     if cfg.is_local:
         raise HTTPException(status_code=404, detail="Google sign-in unavailable in local mode")
     if not _google_creds_present(cfg):
@@ -2502,8 +2174,6 @@ async def oauth_callback(request: Request) -> Response:
     are reachable only when the user is already logged in, so no extra
     auth check is needed here — the OAuth state token is the binding."""
     cfg = state.cfg
-    if not cfg.is_adult:
-        raise HTTPException(status_code=404, detail="Google integrations are adult-mode only")
     if not _google_creds_present(cfg):
         raise HTTPException(status_code=400, detail="Google credentials missing")
 
@@ -2532,7 +2202,7 @@ async def oauth_callback(request: Request) -> Response:
 
     # Identity branch: bind the email if not yet bound; reject mismatch.
     issued_login = False
-    if result.purpose in ("identity", "both") and result.identity_email:
+    if result.purpose in ("identity", "both") and result.identity_email:  # type: ignore[truthy-bool]
         from app.db_kv import kv_get, kv_set
 
         bound = kv_get(cfg.data_root, runtime_config_mod.KV_GOOGLE_IDENTITY_EMAIL)
@@ -2566,7 +2236,7 @@ async def oauth_callback(request: Request) -> Response:
         # Identity flow lands the user back at /setup/3 (mid-wizard) or /
         # (post-setup login). Use _setup_complete to decide.
         target = "/" if _setup_complete() else "/setup/3"
-        return _issue_login_cookie("adult", redirect_to=target)
+        return _issue_login_cookie(redirect_to=target)
 
     # Tool-only callback (the existing /connect-gmail flow path).
     return state.templates.TemplateResponse(request, "connect_gmail.html", {"variant": "callback_ok"})
@@ -2687,194 +2357,6 @@ async def session_paste(session_id: str, request: Request, _: str = Depends(requ
 
 
 # ---------------------------------------------------------------------------
-# Kid-mode OCR-discard attachment (Step 8).
-#
-# Variant-C: kid uploads a screenshot, the server runs vision OCR
-# synchronously, the original file is deleted, the transcript is rendered as
-# a tool-card in chat, and then the companion replies. No library entry; no
-# residual image. The companion uses list_people / lookup_person tools to
-# spot unknown names from the OCR text and asks the kid in dialogue.
-# ---------------------------------------------------------------------------
-
-_KID_ATTACH_MAX_BYTES = 10 * 1024 * 1024  # 10 MB — kid screenshots, not big PDFs.
-_KID_ATTACH_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".heic"}
-
-
-@app.post("/session/{session_id}/kid-attach", response_class=HTMLResponse)
-async def session_kid_attach(
-    session_id: str,
-    request: Request,
-    _: str = Depends(require_auth),
-) -> HTMLResponse:
-    """Kid-only image attachment with sync OCR + immediate file deletion."""
-    cfg = state.cfg
-    if not cfg.is_kid:
-        raise HTTPException(404, "kid-attach is kid-mode only")
-
-    try:
-        header = state.store.load_header(session_id)
-    except FileNotFoundError:
-        raise HTTPException(404, "Session not found")
-    if header.status != "active":
-        raise HTTPException(410, "Session is ended")
-
-    form = await request.form()
-    upload_obj = form.get("file")
-    if not hasattr(upload_obj, "filename") or not upload_obj.filename:  # type: ignore[union-attr]
-        raise HTTPException(400, "no file field")
-    user_text = str(form.get("content", "")).strip()
-
-    from fastapi import UploadFile
-
-    file: UploadFile = upload_obj  # type: ignore[assignment]
-    filename = _safe_filename(file.filename or "image.png")
-    suffix = Path(filename).suffix.lower() or ".png"
-    if suffix not in _KID_ATTACH_EXTS:
-        raise HTTPException(415, f"unsupported image type: {suffix}")
-
-    body = await file.read()
-    if len(body) > _KID_ATTACH_MAX_BYTES:
-        raise HTTPException(413, f"image too large (max {_KID_ATTACH_MAX_BYTES // (1024*1024)} MB)")
-    if not body:
-        raise HTTPException(400, "empty upload")
-
-    # Stage the file under the session dir; we will delete it after OCR.
-    staging_dir = cfg.data_root / "kid-attach-staging"
-    staging_dir.mkdir(parents=True, exist_ok=True)
-    staged_name = f"{session_id}-{secrets.token_hex(4)}-{filename}"
-    staged = staging_dir / staged_name
-    staged.write_bytes(body)
-
-    # Synchronous OCR via the existing ImageExtractor.
-    extractor = state.extractor_registry.pick(staged, file.content_type or "image/png")
-    if extractor is None or extractor.kind != "image":
-        try:
-            staged.unlink(missing_ok=True)
-        finally:
-            pass
-        raise HTTPException(500, "no image extractor available")
-
-    ocr_text = ""
-    ocr_failed = False
-    try:
-        if cfg.is_local:
-            ocr_text = f"[local-mock OCR of {filename}]"
-        else:
-            result = extractor.extract(staged)
-            ocr_text = (result.extracted_md or "").strip()
-    except Exception as e:  # noqa: BLE001
-        log.exception("kid_attach.ocr_failed", filename=filename, error=str(e))
-        ocr_failed = True
-    finally:
-        # OCR-DISCARD: kill the original. The transcript is what the chat keeps.
-        try:
-            staged.unlink(missing_ok=True)
-        except OSError:
-            pass
-
-    # Append the visible turns to the chat log.
-    user_marker = f"[attached: {filename}]"
-    user_visible = f"{user_marker}\n\n{user_text}" if user_text else user_marker
-    state.store.append_message(
-        session_id,
-        Message(
-            role="user",
-            content=user_visible,
-            meta={"kid_attach": True, "filename": filename},
-        ),
-    )
-    state.store.append_message(
-        session_id,
-        Message(
-            role="system_event",
-            content=ocr_text if not ocr_failed else "",
-            meta={
-                "kind": "kid_attach_ocr",
-                "filename": filename,
-                "failed": ocr_failed,
-            },
-        ),
-    )
-    state.store.append_event(
-        session_id,
-        "kid_attach",
-        {"filename": filename, "ocr_chars": len(ocr_text), "failed": ocr_failed},
-    )
-
-    # Build companion turn. The OCR text is folded into the user message we
-    # send to the model so the model has the screenshot's content in context.
-    if ocr_failed:
-        synth_user = (
-            f"[I attached an image: {filename}, but the OCR step failed. "
-            f"Tell me you couldn't read it and ask me to type out the relevant part.]\n\n"
-            f"{user_text}"
-        ).strip()
-    else:
-        synth_user = (
-            f"[I attached an image: {filename}. Here's what you read from it (vision OCR — original image discarded):]\n\n"
-            f"{ocr_text or '(no text was found in the image)'}\n\n"
-            f"{user_text or '(no other text from me — figure out what I want from context)'}"
-        )
-
-    blocks = state.loader.assemble(frame_tag="")
-    if cfg.is_local:
-        reply_text = f"[local mock reply] OCR'd {filename} ({len(ocr_text)} chars). user said: {user_text!r}"
-        loop_result = None
-    else:
-        claude = claude_mod.get_client(runtime_config_mod.get_anthropic_key(cfg.data_root))
-        assert claude is not None, "kid-attach invoked without an Anthropic API key"
-        history: list[dict] = []
-        prior = state.store.load_messages(session_id)
-        # Drop the two messages we just appended (user + system_event); we
-        # rebuild the user turn with the synthesised OCR-folded version.
-        for m in prior[:-2]:
-            if m.role not in ("user", "assistant"):
-                continue
-            raw_blocks = m.meta.get("blocks") if m.meta else None
-            if raw_blocks:
-                history.append({"role": m.role, "content": raw_blocks})
-            else:
-                history.append({"role": m.role, "content": m.content})
-        history.append({"role": "user", "content": synth_user})
-        tools_reg = _build_tool_registry(cfg, session_id=session_id)
-        loop_result = await asyncio.to_thread(
-            tool_loop_mod.run_tool_loop,
-            claude,
-            header.model or SONNET,
-            blocks,
-            history,
-            tools_reg,
-        )
-        reply_text = loop_result.text or "(no response)"
-        for tc in loop_result.tool_calls:
-            state.store.append_event(
-                session_id,
-                "tool_call",
-                {"name": tc.name, "arguments": tc.arguments, "summary": tc.result_summary[:200]},
-            )
-
-    assistant_msg = _persist_turns_to_store(
-        session_id=session_id,
-        local_mode=cfg.is_local,
-        loop_result=loop_result if not cfg.is_local else None,
-        fallback_text=reply_text,
-    )
-
-    return state.templates.TemplateResponse(
-        request,
-        "fragments/kid_attach_pair.html",
-        {
-            "filename": filename,
-            "user_text": user_text,
-            "ocr_text": ocr_text,
-            "ocr_failed": ocr_failed,
-            "assistant_message": assistant_msg,
-            "header": header,
-        },
-    )
-
-
-# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -2921,36 +2403,10 @@ def _persist_turns_to_store(
 _LIBRARY_MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # 25 MB; matches legacy /upload cap
 
 
-def require_library_access(
-    request: Request,
-    admin_credentials: HTTPBasicCredentials | None = Depends(_admin_basic_auth),
-) -> str:
-    """
-    Library + people access shape:
-      - local mode: pass.
-      - kid mode: parent-admin basic auth (kid doesn't see /library or /people).
-      - adult mode: same cookie auth as the rest of the user surface.
-    """
-    cfg = state.cfg
-    if cfg.is_local:
-        return "liam"
-    if cfg.is_kid:
-        if admin_credentials is not None and _check_basic_credentials(admin_credentials):
-            return admin_credentials.username
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="library is parent-admin only in kid mode",
-            headers={"WWW-Authenticate": 'Basic realm="claudia-admin"'},
-        )
-    # Adult mode: cookie auth (the v0.7.1 refactor; no more HTTP Basic).
-    display = _adult_cookie_display_name(request)
-    if display is not None:
-        return display
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="adult-not-logged-in",
-        headers={"Location": "/login"},
-    )
+def require_library_access(request: Request) -> str:
+    """Cookie auth — same shape as require_auth, kept distinct so library
+    routes have an obvious dependency name in tests/observability."""
+    return require_auth(request)
 
 
 @app.get("/library", response_class=HTMLResponse)
